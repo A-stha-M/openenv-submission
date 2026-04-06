@@ -1,0 +1,15 @@
+spec_version: 1
+name: my_env
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+description: "Cold-Chain Logistics Simulator: Route a refrigerated truck to its destination before the cargo spoils. Balance speed, cooling power, and fuel against dynamic ambient temperatures and traffic delays."
+version: 1.0.0
+tasks:
+  - id: cold_chain_easy
+    description: "Navigate a short route with mild weather. Do not let cargo exceed 5.0C."
+  - id: cold_chain_medium
+    description: "Navigate a route with high ambient temperatures and a partial cooling unit failure."
+  - id: cold_chain_hard
+    description: "Navigate a long route with severe traffic delays, high heat, and strict fuel constraints."

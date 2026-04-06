@@ -74,11 +74,6 @@ pydantic_core==2.41.5
 pydub==0.25.1
 Pygments==2.20.0
 PyJWT==2.12.1
-pyperclip==1.11.0
-python-dateutil==2.9.0.post0
-python-dotenv==1.2.2
-python-multipart==0.0.24
-pytz==2026.1.post1
 # pywin32==311
 # pywin32-ctypes==0.2.3
 # pyperclip==1.11.0
