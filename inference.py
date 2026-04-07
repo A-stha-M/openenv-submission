@@ -14,7 +14,13 @@ API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
 
-TASKS = ["cold_chain_easy", "cold_chain_medium", "cold_chain_hard"]
+TASKS = [
+    "cold_chain_easy",
+    "cold_chain_medium",
+    "cold_chain_hard",
+    "cold_chain_vaccine_urgent",
+    "cold_chain_grid_outage",
+]
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
@@ -24,11 +30,12 @@ SYSTEM_PROMPT = textwrap.dedent(
     Environment mechanics:
     - Ambient heat and traffic change each step.
     - Excessive cooling can damage compressor health and increase fuel burn.
+    - Thermal excursion hours are tracked against a scenario-specific compliance budget.
     - Repair_Hub can restore cooling health/fuel, but route switching and repeated hub visits are penalized.
-    - Task score blends completion, cargo quality, fuel, schedule, and discipline.
+    - Task score blends completion, cargo quality, fuel, schedule, discipline, and compliance.
 
     Strategy hints:
-    - Keep cargo in ~1.4C to 4.2C zone.
+    - Keep cargo in ~1.4C to 4.2C zone and protect compliance budget.
     - Prefer smooth policy (avoid frequent target switching).
     - Use Repair_Hub only when risk is rising (hot cargo + low cooling health + long distance left).
 
@@ -49,6 +56,7 @@ def heuristic_action(obs) -> Dict[str, float | str]:
     low_fuel = obs.fuel_level_percent <= 16.0
     weak_cooling = obs.cooling_unit_health <= 0.58
     far_remaining = obs.distance_to_destination_km >= 220.0
+    compliance_tight = obs.compliance_index <= 0.5 or (obs.excursion_budget_hours - obs.excursion_hours) <= 1
 
     should_repair = (
         far_remaining
@@ -57,7 +65,7 @@ def heuristic_action(obs) -> Dict[str, float | str]:
         and obs.route_switch_count < 2
     )
 
-    if danger_temp:
+    if danger_temp or compliance_tight:
         cooling = 0.94
         speed = 84.0 if not low_fuel else 72.0
     elif obs.urgency_index >= 0.72:
@@ -109,7 +117,7 @@ def log_end(success, steps, score, rewards):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
-async def run_task(client, env, task_name):
+async def run_task(client, env, task_name, runtime_flags):
     rewards = []
     steps_taken = 0
     success = False
@@ -121,29 +129,37 @@ async def run_task(client, env, task_name):
         # Reset environment with the specific task
         obs = env.reset(task_name=task_name)
         
-        for step in range(1, 16):
+        for step in range(1, 21):
             user_prompt = (
                 f"Task={task_name}; location={obs.current_location}; temp={obs.cargo_temp_celsius:.2f}; "
                 f"fuel={obs.fuel_level_percent:.2f}; ambient={obs.ambient_temp_celsius:.2f}; "
                 f"dist_dest={obs.distance_to_destination_km:.2f}; dist_hub={obs.distance_to_emergency_hub_km:.2f}; "
                 f"cooling_health={obs.cooling_unit_health:.3f}; deadline={obs.delivery_deadline_hours}; "
                 f"elapsed={obs.hours_elapsed}; urgency={obs.urgency_index:.3f}; quality={obs.cargo_quality_index:.3f}; "
+                f"compliance={obs.compliance_index:.3f}; excursions={obs.excursion_hours}/{obs.excursion_budget_hours}; "
                 f"switches={obs.route_switch_count}; score={obs.task_score:.3f}"
             )
             
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-            )
-            
-            action_raw = completion.choices[0].message.content or "{}"
-            parsed = json.loads(action_raw)
-            action_dict = normalize_action(parsed, obs)
+            action_dict = heuristic_action(obs)
+
+            if runtime_flags.get("llm_enabled", True):
+                try:
+                    completion = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.0,
+                    )
+
+                    action_raw = completion.choices[0].message.content or "{}"
+                    parsed = json.loads(action_raw)
+                    action_dict = normalize_action(parsed, obs)
+                except Exception:
+                    runtime_flags["llm_enabled"] = False
+
             action_raw = json.dumps(action_dict, separators=(",", ":"))
             
             # Convert raw JSON to Pydantic Action and step the environment
@@ -176,9 +192,10 @@ async def main():
 
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env = MyEnvironment() # Create exactly ONE truck
+    runtime_flags = {"llm_enabled": True}
     
     for task in TASKS:
-        await run_task(client, env, task)
+        await run_task(client, env, task, runtime_flags)
 
 if __name__ == "__main__":
     asyncio.run(main())

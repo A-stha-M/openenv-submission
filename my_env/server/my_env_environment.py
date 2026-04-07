@@ -36,7 +36,7 @@ class MyEnvironment(Environment):
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
-    MAX_STEPS: int = 20
+    MAX_STEPS: int = 24
 
     TASK_CONFIGS: Dict[str, Dict[str, object]] = {
         "cold_chain_easy": {
@@ -46,6 +46,7 @@ class MyEnvironment(Environment):
             "base_traffic": 1.05,
             "cooling_health": 0.96,
             "deadline_hours": 7,
+            "excursion_budget_hours": 3,
             "heat_profile": [0.0, 0.8, 1.1, 0.4, -0.2, 0.6, 0.0, -0.4, 0.3, 0.0],
             "traffic_profile": [1.00, 1.05, 1.10, 1.00, 0.95, 1.05, 1.00, 1.00, 0.98, 1.00],
             "repair_cooling_boost": 0.12,
@@ -58,6 +59,7 @@ class MyEnvironment(Environment):
             "base_traffic": 1.25,
             "cooling_health": 0.78,
             "deadline_hours": 9,
+            "excursion_budget_hours": 2,
             "heat_profile": [1.0, 2.0, 3.0, 1.5, 0.0, 2.5, 3.5, 1.0, 0.5, 2.0, 1.0],
             "traffic_profile": [1.05, 1.15, 1.30, 1.20, 1.10, 1.25, 1.35, 1.15, 1.10, 1.20, 1.15],
             "repair_cooling_boost": 0.20,
@@ -70,34 +72,80 @@ class MyEnvironment(Environment):
             "base_traffic": 1.55,
             "cooling_health": 0.62,
             "deadline_hours": 11,
+            "excursion_budget_hours": 1,
             "heat_profile": [2.0, 3.5, 4.0, 5.0, 2.5, 3.0, 5.5, 4.0, 2.0, 3.5, 4.5, 2.5],
             "traffic_profile": [1.20, 1.35, 1.50, 1.60, 1.40, 1.55, 1.70, 1.55, 1.45, 1.50, 1.60, 1.50],
             "repair_cooling_boost": 0.28,
             "repair_fuel_bonus": 16.0,
         },
+        "cold_chain_vaccine_urgent": {
+            "distance_km": 360.0,
+            "hub_distance_km": 130.0,
+            "ambient_base_c": 32.0,
+            "base_traffic": 1.30,
+            "cooling_health": 0.86,
+            "deadline_hours": 6,
+            "excursion_budget_hours": 1,
+            "heat_profile": [1.0, 1.8, 2.8, 1.2, 0.5, 2.0, 1.2, 0.8, 2.2],
+            "traffic_profile": [1.15, 1.25, 1.35, 1.20, 1.10, 1.30, 1.25, 1.20, 1.30],
+            "repair_cooling_boost": 0.18,
+            "repair_fuel_bonus": 10.0,
+        },
+        "cold_chain_grid_outage": {
+            "distance_km": 520.0,
+            "hub_distance_km": 115.0,
+            "ambient_base_c": 37.0,
+            "base_traffic": 1.40,
+            "cooling_health": 0.55,
+            "deadline_hours": 10,
+            "excursion_budget_hours": 1,
+            "heat_profile": [2.0, 3.0, 5.0, 6.0, 2.5, 4.5, 6.0, 3.0, 2.0, 4.0, 5.0],
+            "traffic_profile": [1.20, 1.25, 1.30, 1.45, 1.35, 1.40, 1.55, 1.40, 1.30, 1.35, 1.40],
+            "repair_cooling_boost": 0.34,
+            "repair_fuel_bonus": 14.0,
+        },
     }
 
     SCORE_WEIGHTS: Dict[str, Dict[str, float]] = {
         "cold_chain_easy": {
-            "completion": 0.35,
+            "completion": 0.32,
             "cargo": 0.25,
             "fuel": 0.20,
             "discipline": 0.10,
-            "schedule": 0.10,
+            "schedule": 0.08,
+            "compliance": 0.05,
         },
         "cold_chain_medium": {
-            "completion": 0.30,
-            "cargo": 0.30,
+            "completion": 0.28,
+            "cargo": 0.29,
             "fuel": 0.15,
             "discipline": 0.10,
-            "schedule": 0.15,
+            "schedule": 0.12,
+            "compliance": 0.06,
         },
         "cold_chain_hard": {
-            "completion": 0.28,
-            "cargo": 0.32,
+            "completion": 0.24,
+            "cargo": 0.31,
             "fuel": 0.10,
             "discipline": 0.15,
-            "schedule": 0.15,
+            "schedule": 0.14,
+            "compliance": 0.06,
+        },
+        "cold_chain_vaccine_urgent": {
+            "completion": 0.26,
+            "cargo": 0.26,
+            "fuel": 0.08,
+            "discipline": 0.12,
+            "schedule": 0.22,
+            "compliance": 0.06,
+        },
+        "cold_chain_grid_outage": {
+            "completion": 0.24,
+            "cargo": 0.30,
+            "fuel": 0.08,
+            "discipline": 0.12,
+            "schedule": 0.18,
+            "compliance": 0.08,
         },
     }
 
@@ -120,12 +168,14 @@ class MyEnvironment(Environment):
         self.cooling_health = 1.0
         self.current_location = "Origin"
         self.deadline_hours = 8
+        self.excursion_budget_hours = 2
 
         self.last_target: str | None = None
         self.route_switch_count = 0
         self.idle_steps = 0
         self.safety_breach_steps = 0
         self.hub_visits = 0
+        self.excursion_hours = 0
         self.max_temp_seen = 2.0
         self.done = False
 
@@ -157,12 +207,14 @@ class MyEnvironment(Environment):
         self.traffic_multiplier = self.base_traffic
         self.cooling_health = float(self.config["cooling_health"])
         self.deadline_hours = int(self.config["deadline_hours"])
+        self.excursion_budget_hours = int(self.config["excursion_budget_hours"])
 
         self.last_target = None
         self.route_switch_count = 0
         self.idle_steps = 0
         self.safety_breach_steps = 0
         self.hub_visits = 0
+        self.excursion_hours = 0
         self.max_temp_seen = self.current_temp
         self.done = False
 
@@ -236,6 +288,10 @@ class MyEnvironment(Environment):
         self.current_temp = max(-2.0, self.current_temp)
         self.max_temp_seen = max(self.max_temp_seen, self.current_temp)
 
+        # Track compliance risk in one-hour bins to emulate regulatory excursion windows.
+        if self.current_temp >= 4.2:
+            self.excursion_hours += 1
+
         # 5. Reaching repair hub applies deterministic maintenance and can be revisited.
         if target == "Repair_Hub" and self.dist_hub <= 0.0:
             self.hub_visits += 1
@@ -252,6 +308,9 @@ class MyEnvironment(Environment):
         if self.current_temp >= 4.6:
             self.safety_breach_steps += 1
             safety_penalty += 0.08
+        if self.excursion_hours > self.excursion_budget_hours:
+            over_budget = self.excursion_hours - self.excursion_budget_hours
+            safety_penalty += 0.05 * min(over_budget, 3)
         if self.fuel <= 12.0:
             safety_penalty += 0.05
         if self.current_temp < 0.8 and cooling > 0.85:
@@ -274,6 +333,9 @@ class MyEnvironment(Environment):
             self.current_location = "Destination"
             final_score = self._task_score(terminal=True)
             step_reward += 0.20 + 0.20 * final_score
+        elif self.excursion_hours >= (self.excursion_budget_hours + 3):
+            done = True
+            self.current_location = "Compliance_Breach"
 
         if self._state.step_count >= self.MAX_STEPS and not done:
             done = True
@@ -324,10 +386,17 @@ class MyEnvironment(Environment):
         quality = 1.0 - max(0.0, self.max_temp_seen - 2.0) / 3.0
         return self._clamp(quality, 0.0, 1.0)
 
+    def _compliance_index(self) -> float:
+        """Score compliance with thermal excursion budget in [0.0, 1.0]."""
+        max_allowed = max(1, self.excursion_budget_hours + 2)
+        compliance = 1.0 - (self.excursion_hours / max_allowed)
+        return self._clamp(compliance, 0.0, 1.0)
+
     def _task_score(self, terminal: bool) -> float:
         """Deterministic task grader producing a score in [0.0, 1.0]."""
         completion = self._clamp(1.0 - (self.dist_dest / max(self.initial_dist, 1.0)), 0.0, 1.0)
         cargo = self._cargo_quality_index()
+        compliance = self._compliance_index()
         fuel_eff = self._clamp(self.fuel / 100.0, 0.0, 1.0)
 
         discipline = 1.0 - (0.12 * self.route_switch_count) - (0.05 * self.idle_steps) - (0.07 * self.safety_breach_steps)
@@ -350,11 +419,17 @@ class MyEnvironment(Environment):
             + weights["fuel"] * fuel_eff
             + weights["discipline"] * discipline
             + weights["schedule"] * schedule
+            + weights["compliance"] * compliance
         )
 
         if terminal and self.current_location == "Destination":
             strategic_bonus = 0.0
-            if self.task_id in {"cold_chain_medium", "cold_chain_hard"} and self.hub_visits == 1:
+            if self.task_id in {
+                "cold_chain_medium",
+                "cold_chain_hard",
+                "cold_chain_vaccine_urgent",
+                "cold_chain_grid_outage",
+            } and self.hub_visits == 1:
                 strategic_bonus = 0.05
             score += strategic_bonus
 
@@ -382,6 +457,9 @@ class MyEnvironment(Environment):
             delivery_deadline_hours=int(self.deadline_hours),
             urgency_index=float(round(self._urgency_index(), 3)),
             cargo_quality_index=float(round(self._cargo_quality_index(), 3)),
+            compliance_index=float(round(self._compliance_index(), 3)),
+            excursion_hours=int(self.excursion_hours),
+            excursion_budget_hours=int(self.excursion_budget_hours),
             route_switch_count=int(self.route_switch_count),
             task_score=float(round(self._task_score(terminal=done), 3)),
             done=done,

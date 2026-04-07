@@ -42,6 +42,9 @@ class MyEnvObservation(Observation):
     delivery_deadline_hours: int = Field(..., description="Soft deadline that affects task score and urgency shaping.")
     urgency_index: float = Field(..., description="0.0 to 1.0 urgency estimate derived from remaining distance and time budget.")
     cargo_quality_index: float = Field(..., description="0.0 to 1.0 quality proxy derived from worst temperature seen so far.")
+    compliance_index: float = Field(..., description="0.0 to 1.0 compliance score based on thermal excursion budget usage.")
+    excursion_hours: int = Field(..., description="Number of one-hour windows spent near or above excursion threshold.")
+    excursion_budget_hours: int = Field(..., description="Allowed excursion-hour budget before compliance penalties escalate.")
     route_switch_count: int = Field(..., description="How many times the policy switched route target.")
     task_score: float = Field(..., description="Deterministic grader score in [0.0, 1.0]. Final at terminal step.")
 

@@ -13,3 +13,7 @@ tasks:
     description: "Hot corridor with partial compressor wear. Strategic one-time repair-hub use can improve final score."
   - id: cold_chain_hard
     description: "Long high-heat route with heavy traffic waves and strict deadline pressure. Tests long-horizon planning discipline."
+  - id: cold_chain_vaccine_urgent
+    description: "Medical-priority lane with tight delivery deadline and low excursion tolerance. Tests schedule-critical planning."
+  - id: cold_chain_grid_outage
+    description: "Infrastructure stress scenario with outage-like heat spikes and degraded refrigeration. Tests recovery strategy under compliance pressure."

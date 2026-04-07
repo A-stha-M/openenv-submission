@@ -40,6 +40,8 @@ Tasks:
 - cold_chain_easy
 - cold_chain_medium
 - cold_chain_hard
+- cold_chain_vaccine_urgent
+- cold_chain_grid_outage
 
 ## Notes
 The environment is deterministic for reproducible grading and benchmark comparisons.
