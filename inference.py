@@ -3,14 +3,14 @@ import asyncio
 import os
 import textwrap
 import json
-from typing import List, Optional
+from typing import Dict
 from openai import OpenAI
 
 # Direct import guarantees state preservation
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-API_KEY = os.getenv("HF_TOKEN")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
 
@@ -18,18 +18,86 @@ TASKS = ["cold_chain_easy", "cold_chain_medium", "cold_chain_hard"]
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
-    You are an AI Logistics Dispatcher. 
-    Goal: Deliver cargo to 'Destination' before temperature exceeds 5.0°C and before fuel hits 0%.
-    
-    CRITICAL STRATEGY:
-    - If the task is 'medium' or 'hard', ambient temperatures are lethal. You MUST increase 'cooling_power' to 0.95 or 1.0.
-    - If you are far from the destination, increase 'speed_kmh' to 95.0 or 100.0 to arrive before spoiling, but watch your fuel!
-    
+    You are an AI cold-chain dispatch planner.
+    Objective: maximize final task_score while safely reaching Destination.
+
+    Environment mechanics:
+    - Ambient heat and traffic change each step.
+    - Excessive cooling can damage compressor health and increase fuel burn.
+    - Repair_Hub can restore cooling health/fuel, but route switching and repeated hub visits are penalized.
+    - Task score blends completion, cargo quality, fuel, schedule, and discipline.
+
+    Strategy hints:
+    - Keep cargo in ~1.4C to 4.2C zone.
+    - Prefer smooth policy (avoid frequent target switching).
+    - Use Repair_Hub only when risk is rising (hot cargo + low cooling health + long distance left).
+
     Output ONLY valid JSON. Do not include markdown blocks like ```json.
     Format exactly like this but change the values based on the status:
     {"target_hub": "Destination", "cooling_power": <float>, "speed_kmh": <float>}
     """
 ).strip()
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def heuristic_action(obs) -> Dict[str, float | str]:
+    """Fallback policy to keep baseline reproducible even when model JSON fails."""
+    danger_temp = obs.cargo_temp_celsius >= 4.4
+    low_fuel = obs.fuel_level_percent <= 16.0
+    weak_cooling = obs.cooling_unit_health <= 0.58
+    far_remaining = obs.distance_to_destination_km >= 220.0
+
+    should_repair = (
+        far_remaining
+        and obs.distance_to_emergency_hub_km <= 160.0
+        and (weak_cooling or (danger_temp and low_fuel))
+        and obs.route_switch_count < 2
+    )
+
+    if danger_temp:
+        cooling = 0.94
+        speed = 84.0 if not low_fuel else 72.0
+    elif obs.urgency_index >= 0.72:
+        cooling = 0.84
+        speed = 90.0 if obs.fuel_level_percent > 24.0 else 78.0
+    else:
+        cooling = 0.66 if obs.cargo_temp_celsius < 3.5 else 0.76
+        speed = 76.0 if obs.fuel_level_percent > 18.0 else 68.0
+
+    target = "Repair_Hub" if should_repair else "Destination"
+    return {
+        "target_hub": target,
+        "cooling_power": round(_clamp(cooling, 0.0, 1.0), 3),
+        "speed_kmh": round(_clamp(speed, 40.0, 120.0), 2),
+    }
+
+
+def normalize_action(payload: Dict[str, object], obs) -> Dict[str, float | str]:
+    """Constrain model output to strict schema and safe bounds."""
+    fallback = heuristic_action(obs)
+
+    target = payload.get("target_hub", fallback["target_hub"])
+    if target not in {"Destination", "Repair_Hub"}:
+        target = fallback["target_hub"]
+
+    try:
+        cooling = float(payload.get("cooling_power", fallback["cooling_power"]))
+    except (TypeError, ValueError):
+        cooling = float(fallback["cooling_power"])
+
+    try:
+        speed = float(payload.get("speed_kmh", fallback["speed_kmh"]))
+    except (TypeError, ValueError):
+        speed = float(fallback["speed_kmh"])
+
+    return {
+        "target_hub": target,
+        "cooling_power": round(_clamp(cooling, 0.0, 1.0), 3),
+        "speed_kmh": round(_clamp(speed, 40.0, 120.0), 2),
+    }
 
 def log_start(task, env, model):
     print(f"\n[START] task={task} env={env} model={model}", flush=True)
@@ -45,6 +113,7 @@ async def run_task(client, env, task_name):
     rewards = []
     steps_taken = 0
     success = False
+    final_task_score = 0.0
     
     log_start(task_name, "cold_chain_logistics", MODEL_NAME)
 
@@ -52,8 +121,15 @@ async def run_task(client, env, task_name):
         # Reset environment with the specific task
         obs = env.reset(task_name=task_name)
         
-        for step in range(1, 15): # Give it up to 15 steps just in case
-            user_prompt = f"Task: {task_name} | Status: Temp={obs.cargo_temp_celsius:.1f}C, Fuel={obs.fuel_level_percent:.1f}%, Dist={obs.distance_to_destination_km:.1f}km"
+        for step in range(1, 16):
+            user_prompt = (
+                f"Task={task_name}; location={obs.current_location}; temp={obs.cargo_temp_celsius:.2f}; "
+                f"fuel={obs.fuel_level_percent:.2f}; ambient={obs.ambient_temp_celsius:.2f}; "
+                f"dist_dest={obs.distance_to_destination_km:.2f}; dist_hub={obs.distance_to_emergency_hub_km:.2f}; "
+                f"cooling_health={obs.cooling_unit_health:.3f}; deadline={obs.delivery_deadline_hours}; "
+                f"elapsed={obs.hours_elapsed}; urgency={obs.urgency_index:.3f}; quality={obs.cargo_quality_index:.3f}; "
+                f"switches={obs.route_switch_count}; score={obs.task_score:.3f}"
+            )
             
             completion = client.chat.completions.create(
                 model=MODEL_NAME,
@@ -61,11 +137,14 @@ async def run_task(client, env, task_name):
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                temperature=0.0,
             )
             
             action_raw = completion.choices[0].message.content or "{}"
-            action_dict = json.loads(action_raw)
+            parsed = json.loads(action_raw)
+            action_dict = normalize_action(parsed, obs)
+            action_raw = json.dumps(action_dict, separators=(",", ":"))
             
             # Convert raw JSON to Pydantic Action and step the environment
             action = MyEnvAction(**action_dict)
@@ -74,6 +153,7 @@ async def run_task(client, env, task_name):
             # The observation object directly holds the reward and done state
             reward = obs.reward
             done = obs.done
+            final_task_score = obs.task_score
             
             rewards.append(reward)
             steps_taken = step
@@ -87,10 +167,13 @@ async def run_task(client, env, task_name):
     except Exception as e:
         log_step(steps_taken+1, "error", 0.0, True, str(e))
     finally:
-        total_score = min(max(sum(rewards), 0.0), 1.0) if success else 0.0
+        total_score = max(0.0, min(1.0, final_task_score))
         log_end(success, steps_taken, total_score, rewards)
 
 async def main():
+    if not API_KEY:
+        raise RuntimeError("Missing API key. Set HF_TOKEN (or OPENAI_API_KEY) before running inference.py")
+
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env = MyEnvironment() # Create exactly ONE truck
     

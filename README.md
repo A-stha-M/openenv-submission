@@ -1,107 +1,159 @@
-# OpenEnv: Cold Chain Logistics Environment 🚚❄️
+# OpenEnv Submission: Cold-Chain Dispatch Under Thermal Risk
 
-## Motivation & Problem Statement
-In the real world, supply chain logistics is not just about finding the shortest path; it is about resource management under harsh, dynamic conditions. Human dispatchers managing refrigerated trucks (Cold Chains) face a constant, stressful optimization problem:
+## Why This Environment Matters
+Real cold-chain dispatch is a high-stakes operational task, not a toy path-finding problem.
 
-- Drive faster to arrive sooner? *You burn fuel exponentially.*
-- Crank up the AC to fight a 40°C heatwave? *You drain the fuel tank faster.*
-- Slow down to save gas? *The cargo might spoil in the heat.*
+A dispatcher must continuously trade off:
+- on-time delivery vs fuel burn,
+- cargo safety vs compressor wear,
+- route commitment vs emergency repair detours.
 
-This OpenEnv benchmark simulates this exact physical dilemma. The agent acts as an AI Dispatcher that must output JSON commands (`target_hub`, `cooling_power`, `speed_kmh`) at every time step to safely route a truck to its destination without the cargo temperature exceeding **5.0°C** and without the fuel hitting **0%**.
+This environment models those real dispatch tensions with deterministic, reproducible dynamics that are suitable for agent benchmarking.
 
----
+## OpenEnv Compliance
+- Typed Pydantic models for action/observation/reward in [my_env/models.py](my_env/models.py).
+- Full environment interface with reset/step/state in [my_env/server/my_env_environment.py](my_env/server/my_env_environment.py).
+- OpenEnv manifest with task metadata in [my_env/openenv.yaml](my_env/openenv.yaml).
+- Baseline script named [inference.py](inference.py) at repository root.
 
-## State & Action Space
+## Action Space
+Agent outputs one JSON action per step:
+- target_hub: Destination or Repair_Hub
+- cooling_power: float in [0.0, 1.0]
+- speed_kmh: float in [40.0, 120.0]
 
-### Observation Space (State)
-- `cargo_temp_celsius`: Current temp (Critical limit: 5.0°C)
-- `fuel_level_percent`: Remaining fuel (Critical limit: 0.0%)
-- `distance_to_destination_km`: Target to reach 0
-- `ambient_temp_celsius`: External weather
-- `cooling_unit_health`: Simulator modifier (1.0 is healthy, lower means AC is failing)
-- `current_location`: Textual status (e.g., `"En_Route"`, `"Spoiled"`, `"Destination"`)
+## Observation Space
+Environment returns typed state each step:
+- task_name
+- current_location
+- cargo_temp_celsius
+- fuel_level_percent
+- ambient_temp_celsius
+- distance_to_destination_km
+- distance_to_emergency_hub_km
+- cooling_unit_health
+- hours_elapsed
+- delivery_deadline_hours
+- urgency_index
+- cargo_quality_index
+- route_switch_count
+- task_score
+- done, reward
 
-### Action Space (JSON)
-- `target_hub` *(str)*: e.g., `"Destination"` or `"Repair_Hub"`
-- `cooling_power` *(float, 0.0 - 1.0)*: Intensity of refrigeration
-- `speed_kmh` *(float, 0.0 - 120.0)*: Velocity
+## Creativity and Novel Mechanics
+This version adds deterministic mechanics designed to improve novelty and reduce exploitability:
+- Heatwave pulses: each task has a fixed ambient heat profile, creating timed windows for risk.
+- Traffic waves: deterministic congestion multipliers create non-stationary route efficiency.
+- Compressor wear: sustained aggressive cooling degrades cooling_unit_health over time.
+- Repair hub trade-off: visiting Repair_Hub restores cooling health and fuel, but repeated visits and route-switching are penalized.
+- Dispatch discipline scoring: indecisive target switching and low-progress stalling reduce outcome quality.
 
----
+These mechanics force multi-step strategy rather than one-shot max-speed/max-cooling heuristics.
 
-## Task Difficulties
+## Reward Design (Dense + Terminal)
+Reward is meaningful throughout the trajectory:
+- positive progress reward, urgency-aware for destination progress,
+- thermal stability and efficient operation-band bonuses,
+- penalties for unsafe temperature/fuel states,
+- penalties for route switching and loop-like behavior,
+- terminal success bonus tied to deterministic task_score.
 
-We implemented **3 deterministic grading tasks**:
+Undesirable behavior is explicitly discouraged while still giving partial-progress signal.
 
-### 1. `cold_chain_easy`
-- Short distance (300 km)
-- Mild weather (25°C)
-- Easily solvable by maxing out speed and cooling
+## Task Suite and Deterministic Graders
+Three tasks are included (easy -> medium -> hard), each with deterministic weather/traffic profiles and grader weights:
 
-### 2. `cold_chain_medium`
-- Medium distance (400 km)
-- Hot weather (35°C)
-- Partial cooling unit failure
+1. cold_chain_easy
+- Shorter route, milder thermal pressure.
+- Teaches stable operation bands and basic energy management.
 
-### 3. `cold_chain_hard`
-- Extreme distance (600 km)  
-- Severe weather (40°C)  
-- Heavy traffic  
+2. cold_chain_medium
+- Longer route, hotter profile, partial cooling wear.
+- Strategic one-time repair-hub use becomes useful.
 
-**Note:** This task is designed to be highly resistant to zero-shot LLM prompting. Baseline agents tend to maximize cooling to fight the heat, which inevitably leads to running out of fuel (**Stranded**) before reaching the destination.
+3. cold_chain_hard
+- Long route, severe heat/traffic pulses, tight schedule pressure.
+- Requires long-horizon policy discipline and risk-aware adaptation.
 
----
+Task score is deterministic in [0.0, 1.0] and blends:
+- completion,
+- cargo quality,
+- fuel efficiency,
+- policy discipline,
+- schedule adherence.
 
-## Setup & Validation
+## Baseline Inference
+Baseline runner is [inference.py](inference.py) and uses the OpenAI client API path as required.
 
-This project is built to the exact Meta OpenEnv specifications.
+Required environment variables:
+- API_BASE_URL
+- MODEL_NAME
+- HF_TOKEN
 
-### 1. Local Docker Build
+Also supported:
+- OPENAI_API_KEY (fallback if HF_TOKEN is not set)
+
+The script emits strict structured logs using:
+- [START]
+- [STEP]
+- [END]
+
+## Setup
+
+Install dependencies:
 
 ```bash
-docker build -t my_env -f server/Dockerfile .
-docker run -p 8000:8000 my_env
+pip install -r requirements.txt
 ```
 
-### 2. Automated Validation
-
-Run Meta's validation script against the Hugging Face Space:
+Run baseline:
 
 ```bash
-./validate-submission.sh <YOUR_HF_SPACE_URL>
-```
-
----
-
-## Running the Baseline Inference
-
-The baseline uses **Qwen/Qwen2.5-7B-Instruct** via the Hugging Face Inference API.
-
-### Note on Model Selection
-We deliberately selected the **7B model** instead of the **72B model**. Logistics loops require up to **15 continuous steps**. Using 72B rapidly depletes Hugging Face free-tier credits, resulting in **HTTP 402: Payment Required** errors mid-episode.
-
-The **7B model** ensures the baseline is highly reproducible for evaluators without rate-limiting.
-
-### Run Commands
-
-```bash
-# 1. Export required credentials
-export HF_TOKEN="your_hf_read_token"
-export API_BASE_URL="https://router.huggingface.co/v1"
-export MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
-
-# 2. Run the evaluator
+set HF_TOKEN=your_token
+set API_BASE_URL=https://router.huggingface.co/v1
+set MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
 python inference.py
 ```
 
----
+## Docker
+Build and run locally:
 
-## Baseline Results
+```bash
+docker build -t cold-chain-env -f my_env/server/Dockerfile my_env
+docker run -p 8000:8000 cold-chain-env
+```
 
-| Task | Result | Score |
-|------|--------|-------|
-| Easy | Success | ~0.88 |
-| Medium | Success | ~0.78 |
-| Hard | Failed | 0.00 |
+## Hugging Face Space Deployment
+This environment is designed to run as a Docker HF Space and tagged with openenv in the Space README metadata.
 
-**Hard Task Failure Reason:**  
-The agent anchors to high cooling/speed and runs out of fuel on **Step 8**. Left as a challenge for advanced RL agents!
+## Baseline Score Table
+Fill the table below from a real run of [inference.py](inference.py) before final submission:
+
+| Task | Score (0.0-1.0) | Notes |
+|------|------------------|-------|
+| cold_chain_easy | 0.892 | Reached Destination in 5 steps. |
+| cold_chain_medium | 0.611 | Reached Destination in 9 steps under high heat. |
+| cold_chain_hard | 0.255 | Failed at step 2 (spoilage), leaving headroom for stronger policies. |
+
+## Pre-Submission Checklist
+- HF Space deploys and /reset responds.
+- openenv validate passes for [my_env/openenv.yaml](my_env/openenv.yaml).
+- docker build + docker run works with [my_env/server/Dockerfile](my_env/server/Dockerfile).
+- [inference.py](inference.py) runs end-to-end and emits strict log format.
+- Three tasks are listed and graded in [0.0, 1.0].
+
+## Running The Organizer Prevalidation Script
+Because this repository stores the OpenEnv package under [my_env](my_env), run the script with repo_dir set to ./my_env.
+
+```bash
+./validate-submission.sh https://<your-space>.hf.space ./my_env
+```
+
+Optional local dry-run before deploying (uses local container instead of HF URL):
+
+```bash
+docker build -t cold-chain-local-check my_env
+docker run -d --name cold-chain-local-check -p 8010:8000 cold-chain-local-check
+./validate-submission.sh http://localhost:8010 ./my_env
+docker rm -f cold-chain-local-check
+```

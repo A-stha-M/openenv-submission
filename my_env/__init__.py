@@ -6,10 +6,11 @@
 
 """Cold Chain Logistics Environment."""
 
-# Import the renamed models
+from .client import MyEnv
 from .models import MyEnvAction, MyEnvObservation
 
 __all__ = [
+    "MyEnv",
     "MyEnvAction",
     "MyEnvObservation",
 ]

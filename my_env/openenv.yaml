@@ -4,12 +4,12 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
-description: "Cold-Chain Logistics Simulator: Route a refrigerated truck to its destination before the cargo spoils. Balance speed, cooling power, and fuel against dynamic ambient temperatures and traffic delays."
+description: "Cold-Chain Dispatch Simulator: Deliver perishable cargo with deterministic heat/traffic pulses, compressor wear, repair-hub trade-offs, and trajectory-level grading signals in [0.0, 1.0]."
 version: 1.0.0
 tasks:
   - id: cold_chain_easy
-    description: "Navigate a short route with mild weather. Do not let cargo exceed 5.0C."
+    description: "Short route with mild pulses. Learn stable cruising bands and avoid unnecessary route switching."
   - id: cold_chain_medium
-    description: "Navigate a route with high ambient temperatures and a partial cooling unit failure."
+    description: "Hot corridor with partial compressor wear. Strategic one-time repair-hub use can improve final score."
   - id: cold_chain_hard
-    description: "Navigate a long route with severe traffic delays, high heat, and strict fuel constraints."
+    description: "Long high-heat route with heavy traffic waves and strict deadline pressure. Tests long-horizon planning discipline."
