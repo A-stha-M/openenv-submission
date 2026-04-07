@@ -1,6 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
 import asyncio
 import os
 import textwrap
@@ -8,113 +6,96 @@ import json
 from typing import List, Optional
 from openai import OpenAI
 
-# Import our custom environment and actions
-from my_env.models import MyEnvAction
+# Direct import guarantees state preservation
 from my_env.server.my_env_environment import MyEnvironment
+from my_env.models import MyEnvAction
 
-# MANDATORY CONFIGURATION
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY = os.getenv("HF_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
 
-# Environment Metadata
-TASK_NAME = os.getenv("MY_ENV_TASK", "cold_chain_easy")
-BENCHMARK = "cold_chain_logistics"
-MAX_STEPS = 10
-TEMPERATURE = 0.3
-SUCCESS_THRESHOLD = 0.5
+TASKS = ["cold_chain_easy", "cold_chain_medium", "cold_chain_hard"]
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
-    You are an AI Logistics Dispatcher managing a refrigerated delivery truck.
-    Goal: Deliver cargo to 'Destination' before temperature exceeds 5.0°C.
+    You are an AI Logistics Dispatcher. 
+    Goal: Deliver cargo to 'Destination' before temperature exceeds 5.0°C and before fuel hits 0%.
     
-    Rules:
-    1. Higher 'speed_kmh' reduces travel time but burns fuel.
-    2. Higher 'cooling_power' lowers cargo temp but burns fuel.
-    3. If cooling health is low, you must balance speed vs. cooling.
+    CRITICAL STRATEGY:
+    - If the task is 'medium' or 'hard', ambient temperatures are lethal. You MUST increase 'cooling_power' to 0.95 or 1.0.
+    - If you are far from the destination, increase 'speed_kmh' to 95.0 or 100.0 to arrive before spoiling, but watch your fuel!
     
-    Output Format:
-    Reply with ONLY a valid JSON object:
-    {"target_hub": "Destination", "cooling_power": 0.8, "speed_kmh": 85.0}
+    Output ONLY valid JSON. Do not include markdown blocks like ```json.
+    Format exactly like this but change the values based on the status:
+    {"target_hub": "Destination", "cooling_power": <float>, "speed_kmh": <float>}
     """
 ).strip()
 
-def log_start(task: str, env: str, model: str) -> None:
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+def log_start(task, env, model):
+    print(f"\n[START] task={task} env={env} model={model}", flush=True)
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = error if error else "null"
-    done_val = str(done).lower()
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+def log_step(step, action, reward, done, error):
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error or 'null'}", flush=True)
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+def log_end(success, steps, score, rewards):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
-async def main() -> None:
-    # Initialize OpenAI Client as per mandatory instruction
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    
-    # Initialize the local environment
-    env = MyEnvironment()
-    
-    rewards: List[float] = []
+async def run_task(client, env, task_name):
+    rewards = []
     steps_taken = 0
-    total_score = 0.0
     success = False
     
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task_name, "cold_chain_logistics", MODEL_NAME)
 
     try:
-        # Step 0: Reset Environment
-        obs = env.reset()
+        # Reset environment with the specific task
+        obs = env.reset(task_name=task_name)
         
-        for step in range(1, MAX_STEPS + 1):
-            if obs.done:
-                break
-                
-            # Build prompt for the LLM
-            user_prompt = f"Status: Temp={obs.cargo_temp_celsius}C, Fuel={obs.fuel_level_percent}%, Distance={obs.distance_to_destination_km}km"
+        for step in range(1, 15): # Give it up to 15 steps just in case
+            user_prompt = f"Task: {task_name} | Status: Temp={obs.cargo_temp_celsius:.1f}C, Fuel={obs.fuel_level_percent:.1f}%, Dist={obs.distance_to_destination_km:.1f}km"
             
-            # Request action from Model
             completion = client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=TEMPERATURE,
                 response_format={"type": "json_object"}
             )
             
             action_raw = completion.choices[0].message.content or "{}"
-            action_json = json.loads(action_raw)
+            action_dict = json.loads(action_raw)
             
-            # Execute environment step
-            action = MyEnvAction(**action_json)
+            # Convert raw JSON to Pydantic Action and step the environment
+            action = MyEnvAction(**action_dict)
             obs = env.step(action)
             
-            reward = obs.reward or 0.0
+            # The observation object directly holds the reward and done state
+            reward = obs.reward
+            done = obs.done
+            
             rewards.append(reward)
             steps_taken = step
             
-            # MANDATORY LOGGING FORMAT
-            log_step(step=step, action=action_raw, reward=reward, done=obs.done, error=None)
+            log_step(step, action_raw, reward, done, None)
             
-            if obs.done:
+            if done:
+                success = obs.current_location == "Destination"
                 break
 
-        # Calculate final score (normalized 0.0 to 1.0)
-        total_score = sum(rewards)
-        total_score = min(max(total_score, 0.0), 1.0)
-        success = (obs.current_location == "Destination") and (total_score >= SUCCESS_THRESHOLD)
-
     except Exception as e:
-        # error=msg in log_step if an exception occurs during the loop
-        log_step(step=steps_taken+1, action="error", reward=0.0, done=True, error=str(e))
+        log_step(steps_taken+1, "error", 0.0, True, str(e))
     finally:
-        log_end(success=success, steps=steps_taken, score=total_score, rewards=rewards)
+        total_score = min(max(sum(rewards), 0.0), 1.0) if success else 0.0
+        log_end(success, steps_taken, total_score, rewards)
+
+async def main():
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    env = MyEnvironment() # Create exactly ONE truck
+    
+    for task in TASKS:
+        await run_task(client, env, task)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -52,15 +52,17 @@ class MyEnvironment(Environment):
         self.cooling_health = 1.0
         self.current_location = "Origin"
 
-    def reset(self) -> MyEnvObservation:
+    def reset(self, **kwargs) -> MyEnvObservation:
         """
-        Reset the environment based on the task defined in environment variables.
+        Reset the environment based on the task.
+        Accepts dynamic task injection via kwargs from the HTTP API, 
+        or falls back to environment variables.
         """
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._reset_count += 1
 
         # Read the task difficulty injected by the automated evaluator baseline script
-        self.task_id = os.getenv("MY_ENV_TASK", "cold_chain_easy")
+        self.task_id = kwargs.get("task_name", os.getenv("MY_ENV_TASK", "cold_chain_easy"))
         
         # Default starting stats
         self.current_temp = 2.0
