@@ -6,17 +6,11 @@ import json
 from typing import Dict, Optional
 from openai import OpenAI
 
-# Direct import guarantees state preservation
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
-HF_TOKEN = os.getenv("HF_TOKEN")
-IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
-API_KEY = os.getenv("API_KEY")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # Optional when using from_docker_image()
-
+# NOTE: Do NOT read these at module level - read at runtime so evaluator-injected
+# env vars are guaranteed to be present.
 TASKS = [
     "cold_chain_easy",
     "cold_chain_medium",
@@ -111,7 +105,7 @@ def normalize_action(payload: Dict[str, object], obs) -> Dict[str, float | str]:
     }
 
 
-def request_model_action_json(client: OpenAI, user_prompt: str) -> Optional[Dict[str, object]]:
+def request_model_action_json(client: OpenAI, user_prompt: str, model_name: str) -> Optional[Dict[str, object]]:
     """Request model action and parse JSON, tolerating markdown-wrapped outputs."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -121,12 +115,13 @@ def request_model_action_json(client: OpenAI, user_prompt: str) -> Optional[Dict
     raw_content: Optional[str] = None
     try:
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=model_name,
             messages=messages,
             temperature=0.1,
         )
         raw_content = completion.choices[0].message.content or "{}"
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] Model API call failed: {e}", flush=True)
         return None
 
     raw_content = raw_content.strip()
@@ -141,32 +136,36 @@ def request_model_action_json(client: OpenAI, user_prompt: str) -> Optional[Dict
 
     try:
         return json.loads(raw_content)
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] JSON parse failed: {e} | raw: {raw_content[:200]}", flush=True)
         return None
+
 
 def log_start(task, env, model):
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
+
 def log_step(step, action, reward, done, error):
     print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error or 'null'}", flush=True)
+
 
 def log_end(success, steps, score, rewards):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
-async def run_task(client, env, task_name):
+
+async def run_task(client, env, task_name, model_name):
     rewards = []
     steps_taken = 0
     success = False
     score = 0.0
-    
-    log_start(task_name, "cold_chain_logistics", MODEL_NAME)
+
+    log_start(task_name, "cold_chain_logistics", model_name)
 
     try:
-        # Reset environment with the specific task
         obs = env.reset(task_name=task_name)
         score = _clamp(float(getattr(obs, "task_score", 0.0)), 0.0, 1.0)
-        
+
         for step in range(1, 21):
             user_prompt = (
                 f"Task={task_name}; location={obs.current_location}; temp={obs.cargo_temp_celsius:.2f}; "
@@ -177,78 +176,83 @@ async def run_task(client, env, task_name):
                 f"compliance={obs.compliance_index:.3f}; excursions={obs.excursion_hours}/{obs.excursion_budget_hours}; "
                 f"switches={obs.route_switch_count}; score={obs.task_score:.3f}"
             )
-            
-            action_dict = heuristic_action(obs)
 
-            parsed = request_model_action_json(client, user_prompt)
+            # Always call the model first - the proxy MUST receive calls
+            parsed = request_model_action_json(client, user_prompt, model_name)
             if parsed is not None:
                 action_dict = normalize_action(parsed, obs)
+            else:
+                # Only fall back to heuristic if model call failed
+                action_dict = heuristic_action(obs)
 
             action_raw = json.dumps(action_dict, separators=(",", ":"))
-            
-            # Convert raw JSON to Pydantic Action and step the environment
+
             action = MyEnvAction(**action_dict)
             obs = env.step(action)
-            
-            # The observation object directly holds the reward and done state
+
             reward = obs.reward
             done = obs.done
             score = _clamp(float(getattr(obs, "task_score", 0.0)), 0.0, 1.0)
-            
+
             rewards.append(reward)
             steps_taken = step
-            
+
             log_step(step, action_raw, reward, done, None)
-            
+
             if done:
                 success = obs.current_location == "Destination"
                 break
 
     except Exception as e:
-        log_step(steps_taken+1, "error", 0.0, True, str(e))
+        log_step(steps_taken + 1, "error", 0.0, True, str(e))
     finally:
         log_end(success, steps_taken, score, rewards)
 
-async def main():
-    try:
-        client = OpenAI(
-            base_url=os.environ["API_BASE_URL"],
-            api_key=os.environ["API_KEY"],
-        )
-    except KeyError:
-        if "API_BASE_URL" not in os.environ:
-            raise RuntimeError("Missing required environment variable: API_BASE_URL")
-        fallback_key = os.environ.get("HF_TOKEN")
-        if not fallback_key:
-            raise RuntimeError("Missing required environment variable: API_KEY")
-        client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=fallback_key)
 
-    # Ensure at least one authenticated request hits the injected proxy key.
+async def main():
+    # Read env vars at runtime - NOT at module load time
+    api_base_url = os.environ.get("API_BASE_URL")
+    api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+    model_name = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
+
+    if not api_base_url:
+        raise RuntimeError("Missing required environment variable: API_BASE_URL")
+    if not api_key:
+        raise RuntimeError("Missing required environment variable: API_KEY (or HF_TOKEN)")
+
+    print(f"[INFO] Using API_BASE_URL={api_base_url} MODEL={model_name}", flush=True)
+
+    client = OpenAI(
+        base_url=api_base_url,
+        api_key=api_key,
+    )
+
+    # Proxy warm-up: ensure at least one call goes through before tasks start
     try:
         client.models.list()
+        print("[INFO] models.list() warm-up OK", flush=True)
     except Exception as exc:
-        raise RuntimeError(
-            "LLM proxy model-list check failed. Ensure evaluator-injected API_BASE_URL and API_KEY are used."
-        ) from exc
+        print(f"[WARN] models.list() failed (non-fatal): {exc}", flush=True)
 
-    # Mandatory proxy warm-up: fail early if the injected API proxy is unreachable.
     try:
-        client.chat.completions.create(
-            model=MODEL_NAME,
+        warmup = client.chat.completions.create(
+            model=model_name,
             messages=[
                 {"role": "system", "content": "You are a concise assistant."},
                 {"role": "user", "content": "Reply with exactly: ok"},
             ],
         )
+        print(f"[INFO] Warm-up completion OK: {warmup.choices[0].message.content}", flush=True)
     except Exception as exc:
         raise RuntimeError(
-            "LLM proxy warm-up failed. Ensure evaluator-injected API_BASE_URL and API_KEY are used."
+            f"LLM proxy warm-up failed: {exc}. Ensure API_BASE_URL and API_KEY are set correctly."
         ) from exc
 
-    env = MyEnvironment() # Create exactly ONE truck
-    
+    env = MyEnvironment()
+
     for task in TASKS:
-        await run_task(client, env, task)
+        await run_task(client, env, task, model_name)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
