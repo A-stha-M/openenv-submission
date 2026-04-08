@@ -13,6 +13,7 @@ from my_env.models import MyEnvAction
 HF_TOKEN = os.getenv("HF_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # Optional when using from_docker_image()
 
 TASKS = [
     "cold_chain_easy",
@@ -108,25 +109,27 @@ def normalize_action(payload: Dict[str, object], obs) -> Dict[str, float | str]:
     }
 
 def log_start(task, env, model):
-    print(f"\n[START] task={task} env={env} model={model}", flush=True)
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 def log_step(step, action, reward, done, error):
     print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error or 'null'}", flush=True)
 
-def log_end(success, steps, rewards):
+def log_end(success, steps, score, rewards):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
 async def run_task(client, env, task_name, runtime_flags):
     rewards = []
     steps_taken = 0
     success = False
+    score = 0.0
     
     log_start(task_name, "cold_chain_logistics", MODEL_NAME)
 
     try:
         # Reset environment with the specific task
         obs = env.reset(task_name=task_name)
+        score = _clamp(float(getattr(obs, "task_score", 0.0)), 0.0, 1.0)
         
         for step in range(1, 21):
             user_prompt = (
@@ -168,6 +171,7 @@ async def run_task(client, env, task_name, runtime_flags):
             # The observation object directly holds the reward and done state
             reward = obs.reward
             done = obs.done
+            score = _clamp(float(getattr(obs, "task_score", 0.0)), 0.0, 1.0)
             
             rewards.append(reward)
             steps_taken = step
@@ -181,7 +185,7 @@ async def run_task(client, env, task_name, runtime_flags):
     except Exception as e:
         log_step(steps_taken+1, "error", 0.0, True, str(e))
     finally:
-        log_end(success, steps_taken, rewards)
+        log_end(success, steps_taken, score, rewards)
 
 async def main():
     if not HF_TOKEN:
