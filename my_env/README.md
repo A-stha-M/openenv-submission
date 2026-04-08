@@ -152,6 +152,7 @@ curl -X POST http://localhost:8000/step \
 
 Expected response fields include `observation`, `reward`, and `done`.
 Use this command as an endpoint-level smoke test from terminal.
+Note: standalone HTTP calls do not guarantee a shared episode context between `/reset` and `/step`.
 
 Live Space example:
 ```bash
@@ -160,7 +161,7 @@ curl -X POST https://astha28-openenv-cold-chain.hf.space/step \
   -d '{"action":{"target_hub":"Destination","cooling_power":0.82,"speed_kmh":72.0}}'
 ```
 
-For multi-step trajectories with stable episode context, use the EnvClient/WebSocket flow (for example, [inference.py](inference.py)).
+For multi-step trajectories with stable episode context, use the EnvClient/WebSocket flow (for example, [inference.py](inference.py)) or the interactive UI at `/web`.
 
 ### Hugging Face App Task Selection (Important)
 - The quick reset flow in the App defaults to `cold_chain_easy`.
