@@ -126,6 +126,26 @@ cd my_env
 openenv validate
 ```
 
+## Usage Instructions
+### API Smoke Test
+After starting the server, verify reset works:
+```bash
+curl -X POST http://localhost:8000/reset -H "Content-Type: application/json" -d '{}'
+```
+
+### Run a Single Task
+Use the reset payload to select a task:
+```bash
+curl -X POST http://localhost:8000/reset -H "Content-Type: application/json" -d '{"task_name":"cold_chain_hard"}'
+```
+
+### Run Baseline Across All Tasks
+```bash
+cd openenv-submission
+set HF_TOKEN=<your_token>
+python inference.py
+```
+
 ## Baseline Inference
 Baseline script: [inference.py](inference.py)
 
