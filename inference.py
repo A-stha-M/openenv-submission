@@ -10,9 +10,9 @@ from openai import OpenAI
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # Optional when using from_docker_image()
 
 TASKS = [
@@ -188,10 +188,13 @@ async def run_task(client, env, task_name, runtime_flags):
         log_end(success, steps_taken, score, rewards)
 
 async def main():
-    if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN environment variable is required")
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    try:
+        client = OpenAI(
+            base_url=os.environ["API_BASE_URL"],
+            api_key=os.environ["API_KEY"],
+        )
+    except KeyError as exc:
+        raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
     env = MyEnvironment() # Create exactly ONE truck
     runtime_flags = {"llm_enabled": True}
     

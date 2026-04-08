@@ -185,7 +185,8 @@ Expected result: response content includes `"task_name":"cold_chain_vaccine_urge
 ### Run Baseline Across All Tasks
 ```bash
 cd openenv-submission
-set HF_TOKEN=<your_token>
+set API_KEY=<your_proxy_key>
+set API_BASE_URL=<your_proxy_base_url>
 python inference.py
 ```
 
@@ -193,18 +194,20 @@ python inference.py
 Baseline script: [inference.py](inference.py)
 
 Required environment variables:
-- HF_TOKEN (required)
-- API_BASE_URL (default provided)
+- API_KEY (required)
+- API_BASE_URL (required in validator environment)
 - MODEL_NAME (default provided)
 
 Run:
 ```bash
 cd openenv-submission
-set HF_TOKEN=<your_token>
-set API_BASE_URL=https://router.huggingface.co/v1
+set API_KEY=<your_proxy_key>
+set API_BASE_URL=<your_proxy_base_url>
 set MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
 python inference.py
 ```
+
+Note: a `.env` file is not required. On Hugging Face Spaces, set secrets as environment variables in Space Settings.
 
 Output format follows strict [START]/[STEP]/[END] lines required by the hackathon validator.
 
