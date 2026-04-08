@@ -194,9 +194,10 @@ python inference.py
 Baseline script: [inference.py](inference.py)
 
 Required environment variables:
-- API_KEY (required)
+- API_KEY (required by evaluator proxy)
 - API_BASE_URL (required in validator environment)
 - MODEL_NAME (default provided)
+- HF_TOKEN (optional for local runs; map it to API_KEY)
 
 Run:
 ```bash
@@ -208,6 +209,17 @@ python inference.py
 ```
 
 Note: a `.env` file is not required. On Hugging Face Spaces, set secrets as environment variables in Space Settings.
+
+If you only have `HF_TOKEN` locally, map it to `API_KEY` before running inference:
+```bash
+cd openenv-submission
+set HF_TOKEN=<your_hf_token>
+set API_KEY=%HF_TOKEN%
+set API_BASE_URL=https://router.huggingface.co/v1
+python inference.py
+```
+
+Why this mapping exists: Phase 2 validates that calls go through the organizer LiteLLM proxy, which is injected via `API_BASE_URL` + `API_KEY`.
 
 Output format follows strict [START]/[STEP]/[END] lines required by the hackathon validator.
 
