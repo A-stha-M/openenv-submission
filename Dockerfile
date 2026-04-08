@@ -10,6 +10,10 @@ COPY my_env/ .
 
 ENV PYTHONPATH="/app"
 ENV ENABLE_WEB_INTERFACE=true
+# LLM/evaluator configuration variables (set these in Space Secrets/Variables).
+ENV API_BASE_URL="https://router.huggingface.co/v1"
+ENV MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
+ENV HF_TOKEN=""
 
 EXPOSE 8000
 
