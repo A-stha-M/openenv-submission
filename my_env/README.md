@@ -99,30 +99,32 @@ Reward is dense and trajectory-aware:
 - penalties for risky behavior (overheating, low fuel, indecisive rerouting, compliance overrun),
 - terminal success bonus linked to final quality.
 
-## Server Setup
-### Docker (Recommended)
+## Setup and Installation
+### Option A: Docker (Recommended)
 ```bash
 cd openenv-submission
 docker build -t cold-chain-env:latest .
 docker run --rm -p 8000:8000 cold-chain-env:latest
 curl http://localhost:8000/health
 ```
-On server health success response:
+
+Expected health response:
 `{"status":"healthy"}`
 
-### Without Docker
+### Option B: Local Python Setup (requirements.txt)
 ```bash
 cd openenv-submission
 python -m venv .venv
-.venv\Scripts\activate
+source .venv/Scripts/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-cd my_env
-uvicorn server.app:app --host 0.0.0.0 --port 8000
+pip install -r my_env/server/requirements.txt
+uvicorn my_env.server.app:app --host 0.0.0.0 --port 8000
 ```
 
-## OpenEnv Validation
+### OpenEnv Validation
 ```bash
-cd my_env
+cd openenv-submission/my_env
 openenv validate
 ```
 
@@ -138,6 +140,46 @@ Use the reset payload to select a task:
 ```bash
 curl -X POST http://localhost:8000/reset -H "Content-Type: application/json" -d '{"task_name":"cold_chain_hard"}'
 ```
+
+### Send a Step Command from Terminal (Bash)
+Send actions to `/step` with the OpenEnv `StepRequest` shape.
+
+```bash
+curl -X POST http://localhost:8000/step \
+  -H "Content-Type: application/json" \
+  -d '{"action":{"target_hub":"Destination","cooling_power":0.82,"speed_kmh":72.0}}'
+```
+
+Expected response fields include `observation`, `reward`, and `done`.
+Use this command as an endpoint-level smoke test from terminal.
+
+Live Space example:
+```bash
+curl -X POST https://astha28-openenv-cold-chain.hf.space/step \
+  -H "Content-Type: application/json" \
+  -d '{"action":{"target_hub":"Destination","cooling_power":0.82,"speed_kmh":72.0}}'
+```
+
+For multi-step trajectories with stable episode context, use the EnvClient/WebSocket flow (for example, [inference.py](inference.py)).
+
+### Hugging Face App Task Selection (Important)
+- The quick reset flow in the App defaults to `cold_chain_easy`.
+- To run any other scenario, call `/reset` with an explicit `task_name`.
+
+Example (live Space):
+```bash
+curl -X POST https://astha28-openenv-cold-chain.hf.space/reset -H "Content-Type: application/json" -d '{"task_name":"cold_chain_grid_outage"}'
+```
+
+Expected result: the JSON response should contain `"task_name":"cold_chain_grid_outage"`.
+
+PowerShell example:
+```powershell
+$r = Invoke-WebRequest -Uri "https://astha28-openenv-cold-chain.hf.space/reset" -Method Post -ContentType "application/json" -Body '{"task_name":"cold_chain_vaccine_urgent"}' -UseBasicParsing
+$r.Content
+```
+
+Expected result: response content includes `"task_name":"cold_chain_vaccine_urgent"`.
 
 ### Run Baseline Across All Tasks
 ```bash
