@@ -1,16 +1,23 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 import asyncio
 import os
+import sys
 import textwrap
 import json
-from typing import Dict, Optional
+from typing import Dict, List, Optional
+
 from openai import OpenAI
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-# NOTE: Do NOT read these at module level - read at runtime so evaluator-injected
-# env vars are guaranteed to be present.
+# -- Env vars at module level (evaluator injects these before process starts) --
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
+
 TASKS = [
     "cold_chain_easy",
     "cold_chain_medium",
@@ -43,12 +50,32 @@ SYSTEM_PROMPT = textwrap.dedent(
 ).strip()
 
 
+# -- Logging helpers ---------------------------------------------------
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_str = str(error) if error is not None else "null"
+    done_str = "true" if done else "false"
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_str} error={error_str}", flush=True)
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    success_str = "true" if success else "false"
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={success_str} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
+
+
+# -- Core helpers ------------------------------------------------------
+
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
 def heuristic_action(obs) -> Dict[str, float | str]:
-    """Fallback policy to keep baseline reproducible even when model JSON fails."""
+    """Fallback policy when model JSON fails."""
     danger_temp = obs.cargo_temp_celsius >= 4.4
     low_fuel = obs.fuel_level_percent <= 16.0
     weak_cooling = obs.cooling_unit_health <= 0.58
@@ -105,62 +132,48 @@ def normalize_action(payload: Dict[str, object], obs) -> Dict[str, float | str]:
     }
 
 
-def request_model_action_json(client: OpenAI, user_prompt: str, model_name: str) -> Optional[Dict[str, object]]:
-    """Request model action and parse JSON, tolerating markdown-wrapped outputs."""
+def get_model_action(client: OpenAI, user_prompt: str) -> Optional[Dict[str, object]]:
+    """Call the LLM and return parsed JSON action dict, or None on failure."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
-
-    raw_content: Optional[str] = None
     try:
         completion = client.chat.completions.create(
-            model=model_name,
+            model=MODEL_NAME,
             messages=messages,
             temperature=0.1,
         )
-        raw_content = completion.choices[0].message.content or "{}"
-    except Exception as e:
-        print(f"[WARN] Model API call failed: {e}", flush=True)
+        raw = (completion.choices[0].message.content or "{}").strip()
+    except Exception as exc:
+        print(f"[DEBUG] Model request failed: {exc}", flush=True)
         return None
 
-    raw_content = raw_content.strip()
-    if raw_content.startswith("```"):
-        lines = raw_content.splitlines()
-        if len(lines) >= 2:
-            raw_content = "\n".join(lines[1:])
-        if raw_content.endswith("```"):
-            raw_content = raw_content[:-3].strip()
-    if raw_content.lower().startswith("json"):
-        raw_content = raw_content[4:].strip()
+    # Strip markdown fences if present
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        raw = "\n".join(lines[1:]) if len(lines) >= 2 else raw
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+    if raw.lower().startswith("json"):
+        raw = raw[4:].strip()
 
     try:
-        return json.loads(raw_content)
-    except Exception as e:
-        print(f"[WARN] JSON parse failed: {e} | raw: {raw_content[:200]}", flush=True)
+        return json.loads(raw)
+    except Exception as exc:
+        print(f"[DEBUG] JSON parse failed: {exc} | raw: {raw[:200]}", flush=True)
         return None
 
 
-def log_start(task, env, model):
-    print(f"[START] task={task} env={env} model={model}", flush=True)
+# -- Task runner -------------------------------------------------------
 
-
-def log_step(step, action, reward, done, error):
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error or 'null'}", flush=True)
-
-
-def log_end(success, steps, score, rewards):
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
-
-
-async def run_task(client, env, task_name, model_name):
-    rewards = []
+async def run_task(client: OpenAI, env: MyEnvironment, task_name: str) -> float:
+    rewards: List[float] = []
     steps_taken = 0
     success = False
     score = 0.0
 
-    log_start(task_name, "cold_chain_logistics", model_name)
+    log_start(task=task_name, env="cold_chain_logistics", model=MODEL_NAME)
 
     try:
         obs = env.reset(task_name=task_name)
@@ -177,12 +190,11 @@ async def run_task(client, env, task_name, model_name):
                 f"switches={obs.route_switch_count}; score={obs.task_score:.3f}"
             )
 
-            # Always call the model first - the proxy MUST receive calls
-            parsed = request_model_action_json(client, user_prompt, model_name)
+            # Always call the model first - proxy must receive calls
+            parsed = get_model_action(client, user_prompt)
             if parsed is not None:
                 action_dict = normalize_action(parsed, obs)
             else:
-                # Only fall back to heuristic if model call failed
                 action_dict = heuristic_action(obs)
 
             action_raw = json.dumps(action_dict, separators=(",", ":"))
@@ -197,61 +209,28 @@ async def run_task(client, env, task_name, model_name):
             rewards.append(reward)
             steps_taken = step
 
-            log_step(step, action_raw, reward, done, None)
+            log_step(step=step, action=action_raw, reward=reward, done=done, error=None)
 
             if done:
                 success = obs.current_location == "Destination"
                 break
 
     except Exception as e:
-        log_step(steps_taken + 1, "error", 0.0, True, str(e))
+        log_step(step=steps_taken + 1, action="error", reward=0.0, done=True, error=str(e))
     finally:
-        log_end(success, steps_taken, score, rewards)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return score
 
 
-async def main():
-    # Read env vars at runtime - NOT at module load time
-    api_base_url = os.environ.get("API_BASE_URL")
-    api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
-    model_name = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
+# -- Entry point -------------------------------------------------------
 
-    if not api_base_url:
-        raise RuntimeError("Missing required environment variable: API_BASE_URL")
-    if not api_key:
-        raise RuntimeError("Missing required environment variable: API_KEY (or HF_TOKEN)")
-
-    print(f"[INFO] Using API_BASE_URL={api_base_url} MODEL={model_name}", flush=True)
-
-    client = OpenAI(
-        base_url=api_base_url,
-        api_key=api_key,
-    )
-
-    # Proxy warm-up: ensure at least one call goes through before tasks start
-    try:
-        client.models.list()
-        print("[INFO] models.list() warm-up OK", flush=True)
-    except Exception as exc:
-        print(f"[WARN] models.list() failed (non-fatal): {exc}", flush=True)
-
-    try:
-        warmup = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "You are a concise assistant."},
-                {"role": "user", "content": "Reply with exactly: ok"},
-            ],
-        )
-        print(f"[INFO] Warm-up completion OK: {warmup.choices[0].message.content}", flush=True)
-    except Exception as exc:
-        raise RuntimeError(
-            f"LLM proxy warm-up failed: {exc}. Ensure API_BASE_URL and API_KEY are set correctly."
-        ) from exc
-
+async def main() -> None:
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env = MyEnvironment()
 
     for task in TASKS:
-        await run_task(client, env, task, model_name)
+        await run_task(client, env, task)
 
 
 if __name__ == "__main__":
