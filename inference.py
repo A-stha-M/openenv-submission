@@ -112,7 +112,7 @@ def normalize_action(payload: Dict[str, object], obs) -> Dict[str, float | str]:
 
 
 def request_model_action_json(client: OpenAI, user_prompt: str) -> Optional[Dict[str, object]]:
-    """Attempt strict JSON response first, then fallback to a minimal chat call."""
+    """Request model action and parse JSON, tolerating markdown-wrapped outputs."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
@@ -123,20 +123,21 @@ def request_model_action_json(client: OpenAI, user_prompt: str) -> Optional[Dict
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.0,
+            temperature=0.1,
         )
         raw_content = completion.choices[0].message.content or "{}"
     except Exception:
-        # Fallback call avoids optional params that may be rejected by some providers.
-        try:
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-            )
-            raw_content = completion.choices[0].message.content or "{}"
-        except Exception:
-            return None
+        return None
+
+    raw_content = raw_content.strip()
+    if raw_content.startswith("```"):
+        lines = raw_content.splitlines()
+        if len(lines) >= 2:
+            raw_content = "\n".join(lines[1:])
+        if raw_content.endswith("```"):
+            raw_content = raw_content[:-3].strip()
+    if raw_content.lower().startswith("json"):
+        raw_content = raw_content[4:].strip()
 
     try:
         return json.loads(raw_content)
@@ -210,18 +211,17 @@ async def run_task(client, env, task_name):
 
 async def main():
     try:
-        base_url = os.environ["API_BASE_URL"]
-    except KeyError as exc:
-        raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
-
-    # Use evaluator-injected API_KEY when present; fall back to HF_TOKEN for compatibility.
-    api_key = os.environ.get("API_KEY")
-    if not api_key:
-        api_key = os.environ.get("HF_TOKEN")
-    if not api_key:
-        raise RuntimeError("Missing required environment variable: API_KEY")
-
-    client = OpenAI(base_url=base_url, api_key=api_key)
+        client = OpenAI(
+            base_url=os.environ["API_BASE_URL"],
+            api_key=os.environ["API_KEY"],
+        )
+    except KeyError:
+        if "API_BASE_URL" not in os.environ:
+            raise RuntimeError("Missing required environment variable: API_BASE_URL")
+        fallback_key = os.environ.get("HF_TOKEN")
+        if not fallback_key:
+            raise RuntimeError("Missing required environment variable: API_KEY")
+        client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=fallback_key)
 
     # Ensure at least one authenticated request hits the injected proxy key.
     try:
