@@ -208,12 +208,27 @@ async def run_task(client, env, task_name):
 
 async def main():
     try:
-        client = OpenAI(
-            base_url=os.environ["API_BASE_URL"],
-            api_key=os.environ["API_KEY"],
-        )
+        api_base_url = os.environ["API_BASE_URL"]
     except KeyError as exc:
         raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
+
+    # Evaluator-provided API_KEY is primary; HF_TOKEN is local-compat fallback.
+    api_key = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+    if not api_key:
+        raise RuntimeError("Missing required environment variable: API_KEY")
+
+    client = OpenAI(
+        base_url=api_base_url,
+        api_key=api_key,
+    )
+
+    # Ensure at least one authenticated request hits the injected proxy key.
+    try:
+        client.models.list()
+    except Exception as exc:
+        raise RuntimeError(
+            "LLM proxy model-list check failed. Ensure evaluator-injected API_BASE_URL and API_KEY are used."
+        ) from exc
 
     # Mandatory proxy warm-up: fail early if the injected API proxy is unreachable.
     try:
