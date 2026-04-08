@@ -227,6 +227,10 @@ class MyEnvironment(Environment):
         if self.done:
             return self._generate_observation(reward=0.0, done=True)
 
+        # The web UI can call Step before Reset; initialize a valid episode state.
+        if self.initial_dist <= 0.0:
+            self.reset(task_name=self.task_id)
+
         self._state.step_count += 1
         step_index = max(0, self._state.step_count - 1)
 
