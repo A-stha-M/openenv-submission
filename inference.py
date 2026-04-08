@@ -10,7 +10,7 @@ from openai import OpenAI
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-7B-Instruct"
 
@@ -113,15 +113,14 @@ def log_start(task, env, model):
 def log_step(step, action, reward, done, error):
     print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error or 'null'}", flush=True)
 
-def log_end(success, steps, score, rewards):
+def log_end(success, steps, rewards):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} rewards={rewards_str}", flush=True)
 
 async def run_task(client, env, task_name, runtime_flags):
     rewards = []
     steps_taken = 0
     success = False
-    final_task_score = 0.0
     
     log_start(task_name, "cold_chain_logistics", MODEL_NAME)
 
@@ -169,7 +168,6 @@ async def run_task(client, env, task_name, runtime_flags):
             # The observation object directly holds the reward and done state
             reward = obs.reward
             done = obs.done
-            final_task_score = obs.task_score
             
             rewards.append(reward)
             steps_taken = step
@@ -183,14 +181,13 @@ async def run_task(client, env, task_name, runtime_flags):
     except Exception as e:
         log_step(steps_taken+1, "error", 0.0, True, str(e))
     finally:
-        total_score = max(0.0, min(1.0, final_task_score))
-        log_end(success, steps_taken, total_score, rewards)
+        log_end(success, steps_taken, rewards)
 
 async def main():
-    if not API_KEY:
-        raise RuntimeError("Missing API key. Set HF_TOKEN (or OPENAI_API_KEY) before running inference.py")
+    if not HF_TOKEN:
+        raise RuntimeError("HF_TOKEN environment variable is required")
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
     env = MyEnvironment() # Create exactly ONE truck
     runtime_flags = {"llm_enabled": True}
     

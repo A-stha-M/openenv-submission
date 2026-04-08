@@ -1,6 +1,6 @@
 ---
 title: Cold-Chain Dispatch Environment
-emoji: "🚚"
+emoji: 🚚
 colorFrom: blue
 colorTo: red
 sdk: docker
@@ -8,14 +8,30 @@ pinned: false
 app_port: 8000
 tags:
   - openenv
+base_path: /web
 ---
 
 # Cold-Chain Dispatch Environment
 
-This package contains a deterministic OpenEnv environment for refrigerated logistics dispatch.
+This OpenEnv server simulates real-world refrigerated logistics dispatch with deterministic dynamics and programmatic grading.
 
-## Core Idea
-The agent controls route target, cooling power, and speed for a truck carrying temperature-sensitive goods. The policy must deliver on time while preventing spoilage and avoiding fuel exhaustion.
+## Server Setup
+### Docker (Recommended)
+```bash
+cd my_env
+docker build -t cold-chain-env:latest .
+docker run --rm -p 8000:8000 cold-chain-env:latest
+curl http://localhost:8000/health
+```
+
+### Without Docker
+```bash
+cd my_env
+python -m venv venv
+source venv/bin/activate
+pip install -r server/requirements.txt
+uvicorn server.app:app --host 0.0.0.0 --port 8000
+```
 
 ## Endpoints
 - POST /reset
@@ -26,17 +42,7 @@ The agent controls route target, cooling power, and speed for a truck carrying t
 - GET /docs
 - WebSocket /ws
 
-## Run Locally
-
-```bash
-docker build -t cold-chain-env -f server/Dockerfile .
-docker run -p 8000:8000 cold-chain-env
-```
-
-## OpenEnv Metadata
-Environment manifest: openenv.yaml
-
-Tasks:
+## Tasks
 - cold_chain_easy
 - cold_chain_medium
 - cold_chain_hard
@@ -44,4 +50,6 @@ Tasks:
 - cold_chain_grid_outage
 
 ## Notes
-The environment is deterministic for reproducible grading and benchmark comparisons.
+- Deterministic scenarios for reproducible benchmarking.
+- Typed action and observation models in models.py.
+- openenv.yaml defines metadata and task descriptions.

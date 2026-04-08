@@ -1,173 +1,164 @@
-# Cold-Chain Dispatch Benchmark (OpenEnv)
+---
+title: Cold-Chain Dispatch Environment
+emoji: 🚚
+colorFrom: blue
+colorTo: red
+sdk: docker
+pinned: false
+app_port: 8000
+tags:
+  - openenv
+base_path: /web
+---
 
-## Environment Description and Motivation
-This project implements a real-world cold-chain logistics environment for evaluating agentic decision-making under operational constraints.
+# Cold-Chain Dispatch Environment
 
-The setting models a refrigerated truck dispatch workflow where an agent must balance:
-- delivery timeliness,
-- cargo thermal safety,
-- fuel economy,
-- compressor wear,
-- compliance risk (thermal excursion budget),
-- route discipline (avoid indecisive switching).
+## Environment Overview and Motivation
+This benchmark simulates refrigerated logistics dispatch, a real operational task where humans make high-stakes decisions every hour. The agent controls routing, cooling, and speed while balancing:
+- perishable cargo safety,
+- fuel constraints,
+- traffic delays,
+- refrigeration degradation,
+- compliance risk from thermal excursion windows,
+- deadline pressure.
 
-This domain is practical for RL and LLM-agent evaluation because real operators routinely make these trade-offs and mistakes in production logistics systems.
+The environment is designed for evaluating long-horizon planning, policy discipline, and safe recovery behavior under coupled constraints.
 
-## Why This Is Useful for Agent Evaluation
-The benchmark is designed to evaluate capabilities that matter in operational autonomy:
-- Long-horizon planning under coupled constraints (temperature, traffic, fuel, deadlines).
-- Recovery behavior after degradation (repair-hub detour vs direct route commitment).
-- Compliance-aware control (excursion budgets rather than single-threshold binary checks).
-- Policy discipline (looping and unstable rerouting are penalized).
-
-## OpenEnv Spec Compliance
-- Typed models: [my_env/models.py](my_env/models.py)
-- Environment API (`reset`, `step`, `state`): [my_env/server/my_env_environment.py](my_env/server/my_env_environment.py)
-- Manifest and task metadata: [my_env/openenv.yaml](my_env/openenv.yaml)
-- Baseline script at project root: [inference.py](inference.py)
+## Functional Requirements Checklist
+- Real-world task simulation: Yes (cold-chain dispatch operations).
+- OpenEnv compliance: Yes (typed models, reset/step/state implementation, openenv.yaml, openenv validate passing).
+- 3+ tasks with deterministic graders: Yes (5 tasks, deterministic scoring in [0.0, 1.0]).
+- Meaningful dense reward: Yes (progress shaping, stability bonuses, behavior penalties, terminal reward).
+- Baseline inference script: Yes (root [inference.py](inference.py), OpenAI client, required env vars).
 
 ## Action Space
-Per step action (JSON):
-- `target_hub`: `Destination` or `Repair_Hub`
-- `cooling_power`: float in [0.0, 1.0]
-- `speed_kmh`: float in [40.0, 120.0]
+Action fields (typed in [my_env/models.py](my_env/models.py)):
+- target_hub: Destination or Repair_Hub
+- cooling_power: float in [0.0, 1.0]
+- speed_kmh: float in [40.0, 120.0]
 
 ## Observation Space
-Per step observation fields:
-- `task_name`
-- `current_location`
-- `cargo_temp_celsius`
-- `fuel_level_percent`
-- `ambient_temp_celsius`
-- `distance_to_destination_km`
-- `distance_to_emergency_hub_km`
-- `cooling_unit_health`
-- `hours_elapsed`
-- `delivery_deadline_hours`
-- `urgency_index`
-- `cargo_quality_index`
-- `compliance_index`
-- `excursion_hours`
-- `excursion_budget_hours`
-- `route_switch_count`
-- `task_score`
-- `reward`, `done`
+Observation fields (typed in [my_env/models.py](my_env/models.py)):
+- task_name
+- current_location
+- cargo_temp_celsius
+- fuel_level_percent
+- ambient_temp_celsius
+- distance_to_destination_km
+- distance_to_emergency_hub_km
+- cooling_unit_health
+- hours_elapsed
+- delivery_deadline_hours
+- urgency_index
+- cargo_quality_index
+- compliance_index
+- excursion_hours
+- excursion_budget_hours
+- route_switch_count
+- task_score
+- reward, done
 
-## Task Suite (5 Tasks, Deterministic)
-This submission includes 5 deterministic tasks (3+ requirement exceeded):
+## Task Suite and Expected Difficulty
+Task metadata lives in [my_env/openenv.yaml](my_env/openenv.yaml).
 
-1. `cold_chain_easy` (Easy)
-- Mild weather and short route.
-- Focus: stable operation and basic efficiency.
+1. cold_chain_easy (Easy)
+- Mild weather, short route.
+- Objective: learn stable operation and efficient progress.
 
-2. `cold_chain_medium` (Medium)
+2. cold_chain_medium (Medium)
 - Hotter corridor and partial cooling degradation.
-- Focus: balancing thermal control and fuel.
+- Objective: preserve cargo while controlling fuel burn.
 
-3. `cold_chain_hard` (Hard)
-- Long route with severe heat and traffic waves.
-- Focus: long-horizon strategic control.
+3. cold_chain_hard (Hard)
+- Long route with severe heat/traffic pulses.
+- Objective: long-horizon planning under tight resource coupling.
 
-4. `cold_chain_vaccine_urgent` (Hard)
-- Tight deadline and low excursion tolerance.
-- Focus: schedule-critical delivery under strict compliance.
+4. cold_chain_vaccine_urgent (Hard)
+- Medical-priority route with tighter deadline and excursion tolerance.
+- Objective: schedule-critical delivery with compliance awareness.
 
-5. `cold_chain_grid_outage` (Very Hard)
-- Outage-like heat spikes and weak initial cooling health.
-- Focus: recovery strategy and compliance-preserving control.
+5. cold_chain_grid_outage (Very Hard)
+- Outage-like heat spikes and weak cooling health.
+- Objective: robust recovery policy under compliance pressure.
 
-## Grader Design and Quality
-### Score Range
-`task_score` is deterministic and clamped to [0.0, 1.0].
-
-### Determinism and Reproducibility
-Each task uses fixed per-step heat and traffic profiles. No stochastic sampling is used in environment dynamics or grading.
-
-### Multi-Objective Scoring
-Final task score combines weighted components:
+## Grader Design (Deterministic, Reproducible)
+The programmatic grader computes task_score in [0.0, 1.0], combining:
 - completion progress,
 - cargo quality,
 - fuel efficiency,
 - policy discipline,
 - schedule adherence,
-- compliance index (excursion budget usage).
+- compliance index.
 
-### Hardness Signal
-The hard-tier tasks (`cold_chain_hard`, `cold_chain_vaccine_urgent`, `cold_chain_grid_outage`) are intentionally challenging for frontier models because single-rule policies (for example, always max cooling/speed) usually violate fuel or compliance constraints before reaching optimal outcomes.
+All scenarios use fixed step-wise heat and traffic profiles (no randomness), making results reproducible.
 
-## Reward Function
+## Reward Design
 Reward is dense and trajectory-aware:
-- positive shaping for useful progress,
-- stability bonus for safe/efficient operating bands,
-- penalties for unsafe behavior, indecisive rerouting, and overusing excursion budget,
-- success bonus linked to final grader score.
+- positive signal for incremental progress,
+- bonus for stable safe operating bands,
+- penalties for risky behavior (overheating, low fuel, indecisive rerouting, compliance overrun),
+- terminal success bonus linked to final quality.
 
-Undesirable behavior (loops, unsafe thermal behavior, severe compliance overrun) is explicitly penalized.
-
-## Setup and Usage
-### 1) Install Dependencies
+## Server Setup
+### Docker (Recommended)
 ```bash
+cd openenv-submission
+docker build -t cold-chain-env:latest .
+docker run --rm -p 8000:8000 cold-chain-env:latest
+curl http://localhost:8000/health
+```
+On server health success response:
+`{"status":"healthy"}`
+
+### Without Docker
+```bash
+cd openenv-submission
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-### 2) Local Server Run
-```bash
 cd my_env
-uv run server
+uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
-### 3) Baseline Inference
-Required variables:
-- `API_BASE_URL`
-- `MODEL_NAME`
-- `HF_TOKEN`
-
-Run:
-```bash
-set HF_TOKEN=your_token
-set API_BASE_URL=https://router.huggingface.co/v1
-set MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
-python inference.py
-```
-
-### 4) Docker Build and Run
-```bash
-docker build -t cold-chain-env -f my_env/server/Dockerfile my_env
-docker run -p 8000:8000 cold-chain-env
-```
-
-### 5) OpenEnv Validation
+## OpenEnv Validation
 ```bash
 cd my_env
 openenv validate
 ```
 
-## Baseline Scores
-Latest measured run from [inference.py](inference.py) with `MODEL_NAME=Qwen/Qwen2.5-7B-Instruct`:
+## Baseline Inference
+Baseline script: [inference.py](inference.py)
 
-| Task | Baseline Score |
-|------|----------------|
-| cold_chain_easy | 0.908 |
-| cold_chain_medium | 0.574 |
-| cold_chain_hard | 0.289 |
-| cold_chain_vaccine_urgent | 0.891 |
-| cold_chain_grid_outage | 0.228 |
+Required environment variables:
+- HF_TOKEN (required)
+- API_BASE_URL (default provided)
+- MODEL_NAME (default provided)
 
-## Hugging Face Space
-Deployed Space:
-- https://huggingface.co/spaces/Astha28/openenv-cold-chain
-
-## Prevalidation Script Usage
-For the organizer script layout, use `./my_env` as `repo_dir`:
-
+Run:
 ```bash
-bash ./validate-submission.sh https://astha28-openenv-cold-chain.hf.space ./my_env
+cd openenv-submission
+set HF_TOKEN=<your_token>
+set API_BASE_URL=https://router.huggingface.co/v1
+set MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
+python inference.py
 ```
 
-Local dry run:
+Output format follows strict [START]/[STEP]/[END] lines required by the hackathon validator.
+
+## Baseline Performance Scores
+| Task | Score | Note |
+|------|-------|------|
+| cold_chain_easy | 0.908 | Baseline succeeds quickly in stable conditions. |
+| cold_chain_medium | 0.574 | Baseline reaches destination but loses efficiency under heat stress. |
+| cold_chain_hard | 0.289 | Baseline usually fails early, showing long-horizon challenge value. |
+| cold_chain_vaccine_urgent | 0.891 | Deadline-focused behavior can perform well when compliance budget is protected. |
+| cold_chain_grid_outage | 0.228 | Outage scenario exposes weak recovery policies and raises benchmark difficulty. |
+
+## Hugging Face Space
+- Space URL: https://huggingface.co/spaces/Astha28/openenv-cold-chain
+
+## Prevalidation Script
+Run organizer script with environment directory as repo_dir:
 ```bash
-docker build -t cold-chain-local-check my_env
-docker run -d --name cold-chain-local-check -p 8010:8000 cold-chain-local-check
-bash ./validate-submission.sh http://localhost:8010 ./my_env
-docker rm -f cold-chain-local-check
+bash ./validate-submission.sh https://astha28-openenv-cold-chain.hf.space ./my_env
 ```
