@@ -188,8 +188,20 @@ class MyEnvironment(Environment):
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._reset_count += 1
 
-        # Read the task difficulty injected by evaluator scripts
-        self.task_id = kwargs.get("task_name", os.getenv("MY_ENV_TASK", "cold_chain_easy"))
+        # Read task selection from common key aliases used by different clients.
+        nested_task = None
+        if isinstance(kwargs.get("reset_options"), dict):
+            nested_task = kwargs["reset_options"].get("task_name") or kwargs["reset_options"].get("task_id")
+        if isinstance(kwargs.get("metadata"), dict) and nested_task is None:
+            nested_task = kwargs["metadata"].get("task_name") or kwargs["metadata"].get("task_id")
+
+        self.task_id = (
+            kwargs.get("task_name")
+            or kwargs.get("task_id")
+            or kwargs.get("task")
+            or nested_task
+            or os.getenv("MY_ENV_TASK", "cold_chain_easy")
+        )
 
         if self.task_id not in self.TASK_CONFIGS:
             self.task_id = "cold_chain_easy"
