@@ -3,7 +3,7 @@ import asyncio
 import os
 import textwrap
 import json
-from typing import Dict
+from typing import Dict, Optional
 from openai import OpenAI
 
 # Direct import guarantees state preservation
@@ -108,6 +108,39 @@ def normalize_action(payload: Dict[str, object], obs) -> Dict[str, float | str]:
         "speed_kmh": round(_clamp(speed, 40.0, 120.0), 2),
     }
 
+
+def request_model_action_json(client: OpenAI, user_prompt: str) -> Optional[Dict[str, object]]:
+    """Attempt strict JSON response first, then fallback to a minimal chat call."""
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    raw_content: Optional[str] = None
+    try:
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.0,
+        )
+        raw_content = completion.choices[0].message.content or "{}"
+    except Exception:
+        # Fallback call avoids optional params that may be rejected by some providers.
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+            )
+            raw_content = completion.choices[0].message.content or "{}"
+        except Exception:
+            return None
+
+    try:
+        return json.loads(raw_content)
+    except Exception:
+        return None
+
 def log_start(task, env, model):
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
@@ -118,7 +151,7 @@ def log_end(success, steps, score, rewards):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}", flush=True)
 
-async def run_task(client, env, task_name, runtime_flags):
+async def run_task(client, env, task_name):
     rewards = []
     steps_taken = 0
     success = False
@@ -144,23 +177,9 @@ async def run_task(client, env, task_name, runtime_flags):
             
             action_dict = heuristic_action(obs)
 
-            if runtime_flags.get("llm_enabled", True):
-                try:
-                    completion = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=[
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        response_format={"type": "json_object"},
-                        temperature=0.0,
-                    )
-
-                    action_raw = completion.choices[0].message.content or "{}"
-                    parsed = json.loads(action_raw)
-                    action_dict = normalize_action(parsed, obs)
-                except Exception:
-                    runtime_flags["llm_enabled"] = False
+            parsed = request_model_action_json(client, user_prompt)
+            if parsed is not None:
+                action_dict = normalize_action(parsed, obs)
 
             action_raw = json.dumps(action_dict, separators=(",", ":"))
             
@@ -195,11 +214,25 @@ async def main():
         )
     except KeyError as exc:
         raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
+
+    # Mandatory proxy warm-up: fail early if the injected API proxy is unreachable.
+    try:
+        client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": "You are a concise assistant."},
+                {"role": "user", "content": "Reply with exactly: ok"},
+            ],
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "LLM proxy warm-up failed. Ensure evaluator-injected API_BASE_URL and API_KEY are used."
+        ) from exc
+
     env = MyEnvironment() # Create exactly ONE truck
-    runtime_flags = {"llm_enabled": True}
     
     for task in TASKS:
-        await run_task(client, env, task, runtime_flags)
+        await run_task(client, env, task)
 
 if __name__ == "__main__":
     asyncio.run(main())
