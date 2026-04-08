@@ -14,10 +14,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
 IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-# Prefer evaluator-injected API_KEY when both are present.
-if os.getenv("API_KEY"):
-    API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")  # Optional when using from_docker_image()
 
 TASKS = [
@@ -212,12 +209,13 @@ async def run_task(client, env, task_name):
         log_end(success, steps_taken, score, rewards)
 
 async def main():
-    if not API_BASE_URL:
-        raise RuntimeError("Missing required environment variable: API_BASE_URL")
-    if not API_KEY:
-        raise RuntimeError("Missing required environment variable: API_KEY")
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    try:
+        client = OpenAI(
+            base_url=os.environ["API_BASE_URL"],
+            api_key=os.environ["API_KEY"],
+        )
+    except KeyError as exc:
+        raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
 
     # Ensure at least one authenticated request hits the injected proxy key.
     try:
