@@ -210,12 +210,18 @@ async def run_task(client, env, task_name):
 
 async def main():
     try:
-        client = OpenAI(
-            base_url=os.environ["API_BASE_URL"],
-            api_key=os.environ["API_KEY"],
-        )
+        base_url = os.environ["API_BASE_URL"]
     except KeyError as exc:
         raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
+
+    # Use evaluator-injected API_KEY when present; fall back to HF_TOKEN for compatibility.
+    api_key = os.environ.get("API_KEY")
+    if not api_key:
+        api_key = os.environ.get("HF_TOKEN")
+    if not api_key:
+        raise RuntimeError("Missing required environment variable: API_KEY")
+
+    client = OpenAI(base_url=base_url, api_key=api_key)
 
     # Ensure at least one authenticated request hits the injected proxy key.
     try:
