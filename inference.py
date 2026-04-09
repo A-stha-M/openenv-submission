@@ -12,15 +12,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-# ── Environment Variables ──────────────────────────────────────────────
-API_KEY      = os.environ["API_KEY"]                          # strict — evaluator injects this
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")  # ✅ 72B like friend's working code
+# ✅ HF_TOKEN first — evaluator injects key as HF_TOKEN
+# API_KEY as fallback per their error message
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-# Debug: print what we received so evaluator logs show it
+# Debug prints so evaluator logs show what was received
 print(f"[DEBUG] API_BASE_URL={API_BASE_URL}", flush=True)
 print(f"[DEBUG] MODEL_NAME={MODEL_NAME}", flush=True)
-print(f"[DEBUG] API_KEY set={bool(API_KEY)}", flush=True)
+print(f"[DEBUG] HF_TOKEN_set={bool(os.getenv('HF_TOKEN'))} API_KEY_set={bool(os.getenv('API_KEY'))}", flush=True)
 
 TASKS = [
     "cold_chain_easy",
@@ -38,7 +39,7 @@ Environment mechanics:
 - Ambient heat and traffic change each step.
 - Excessive cooling can damage compressor health and increase fuel burn.
 - Thermal excursion hours are tracked against a scenario-specific compliance budget.
-- Repair_Hub can restore cooling health/fuel, but route switching and repeated hub visits are penalized.
+- Repair_Hub can restore cooling health/fuel, but route switching is penalized.
 - Task score blends completion, cargo quality, fuel, schedule, discipline, and compliance.
 
 Strategy hints:
@@ -50,8 +51,6 @@ Output ONLY valid JSON with no markdown fences:
 {"target_hub": "Destination", "cooling_power": <float 0.0-1.0>, "speed_kmh": <float 40.0-120.0>}
 """).strip()
 
-
-# ── Logging ────────────────────────────────────────────────────────────
 
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
@@ -70,9 +69,6 @@ def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
         flush=True,
     )
 
-
-# ── Helpers ────────────────────────────────────────────────────────────
-
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
@@ -89,7 +85,6 @@ def normalize_action(payload: dict) -> dict:
     }
 
 def call_model(client: OpenAI, prompt: str) -> dict:
-    """Call LLM via evaluator proxy. Raises on failure — no silent swallow."""
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
@@ -100,28 +95,22 @@ def call_model(client: OpenAI, prompt: str) -> dict:
         max_tokens=200,
     )
     text = response.choices[0].message.content.strip()
-
-    # Strip markdown fences if model adds them
     if "```" in text:
         parts = text.split("```")
         text  = parts[1] if len(parts) > 1 else parts[0]
         if "```" in text:
             text = text.split("```")[0]
-
     start = text.find("{")
     end   = text.rfind("}")
     if start == -1 or end == -1:
         raise ValueError(f"No JSON found in response: {text!r}")
-
     return json.loads(text[start : end + 1])
 
 
-# ── Task Runner ────────────────────────────────────────────────────────
-
 async def run_task(task_name: str) -> float:
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    env    = MyEnvironment()
 
-    env         = MyEnvironment()
     rewards     = []
     steps_taken = 0
     score       = 0.0
@@ -155,8 +144,7 @@ async def run_task(task_name: str) -> float:
             action_dict = normalize_action(parsed)
             error       = None
         except Exception as e:
-            # ✅ Log loudly so evaluator logs show the real error
-            print(f"[DEBUG] LLM call failed at step {step}: {type(e).__name__}: {e}", flush=True)
+            print(f"[DEBUG] LLM call failed step={step} error={type(e).__name__}: {e}", flush=True)
             action_dict = {"target_hub": "Destination", "cooling_power": 0.75, "speed_kmh": 75.0}
             error       = str(e)
 
@@ -179,13 +167,10 @@ async def run_task(task_name: str) -> float:
     return score
 
 
-# ── Main ───────────────────────────────────────────────────────────────
-
 async def main() -> None:
     scores = {}
     for task in TASKS:
         scores[task] = await run_task(task)
-
     print("\nFINAL SCORES", flush=True)
     for t, s in scores.items():
         print(f"{t}: {s:.2f}", flush=True)
