@@ -4,7 +4,7 @@ import os
 import sys
 import textwrap
 import json
-from typing import Dict, List
+from typing import List
 
 from openai import OpenAI
 
@@ -13,6 +13,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
+
+# ---------------- ENV (MANDATORY FOR PROXY) ----------------
+
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 
 TASKS = [
     "cold_chain_easy",
@@ -38,7 +44,7 @@ Environment mechanics:
 Strategy hints:
 - Keep cargo in ~1.4C to 4.2C zone and protect compliance budget.
 - Prefer smooth policy (avoid frequent target switching).
-- Use Repair_Hub only when risk is rising (hot cargo + low cooling health + long distance left).
+- Use Repair_Hub only when risk is rising.
 
 Output ONLY valid JSON:
 {"target_hub": "Destination", "cooling_power": <float>, "speed_kmh": <float>}
@@ -48,11 +54,11 @@ Output ONLY valid JSON:
 
 # ---------------- Logging ----------------
 
-def log_start(task: str, env: str, model: str) -> None:
+def log_start(task: str, env: str, model: str):
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def log_step(step: int, action: str, reward: float, done: bool, error):
+def log_step(step, action, reward, done, error):
     error_str = str(error) if error else "null"
     done_str = "true" if done else "false"
     print(
@@ -61,7 +67,7 @@ def log_step(step: int, action: str, reward: float, done: bool, error):
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]):
+def log_end(success, steps, score, rewards):
     success_str = "true" if success else "false"
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
@@ -76,7 +82,7 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def normalize_action(payload, obs):
+def normalize_action(payload):
 
     target = payload.get("target_hub", "Destination")
     if target not in ["Destination", "Repair_Hub"]:
@@ -92,15 +98,16 @@ def normalize_action(payload, obs):
     }
 
 
-def call_model(client, model, user_prompt):
+def call_model(client, prompt):
 
     response = client.chat.completions.create(
-        model=model,
+        model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": prompt},
         ],
         temperature=0.1,
+        max_tokens=200,
     )
 
     text = response.choices[0].message.content.strip()
@@ -112,8 +119,7 @@ def call_model(client, model, user_prompt):
 
     start = text.find("{")
     end = text.rfind("}")
-
-    text = text[start : end + 1]
+    text = text[start:end + 1]
 
     return json.loads(text)
 
@@ -122,13 +128,11 @@ def call_model(client, model, user_prompt):
 
 async def run_task(task_name: str):
 
-    # IMPORTANT: client INSIDE task
+    # IMPORTANT: use proxy env vars
     client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=os.environ["API_KEY"],
+        base_url=API_BASE_URL,
+        api_key=API_KEY,
     )
-
-    model = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 
     env = MyEnvironment()
 
@@ -137,7 +141,7 @@ async def run_task(task_name: str):
     score = 0.0
     success = False
 
-    log_start(task_name, "cold_chain_logistics", model)
+    log_start(task_name, "cold_chain_logistics", MODEL_NAME)
 
     obs = env.reset(task_name=task_name)
 
@@ -162,10 +166,10 @@ async def run_task(task_name: str):
             f"score={obs.task_score:.3f}"
         )
 
-        # ALWAYS CALL LLM (MANDATORY)
+        # ALWAYS CALL LLM
         try:
-            parsed = call_model(client, model, user_prompt)
-            action_dict = normalize_action(parsed, obs)
+            parsed = call_model(client, user_prompt)
+            action_dict = normalize_action(parsed)
             error = None
 
         except Exception as e:
@@ -186,13 +190,7 @@ async def run_task(task_name: str):
         rewards.append(reward)
         steps_taken = step
 
-        log_step(
-            step,
-            json.dumps(action_dict),
-            reward,
-            done,
-            error,
-        )
+        log_step(step, json.dumps(action_dict), reward, done, error)
 
         if done:
             success = obs.current_location == "Destination"
