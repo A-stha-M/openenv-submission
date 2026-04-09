@@ -4,7 +4,6 @@ import os
 import sys
 import textwrap
 import json
-from typing import List
 
 from openai import OpenAI
 
@@ -13,10 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-
-# ---------------- ENV (MANDATORY FOR PROXY) ----------------
-
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+# ✅ API_KEY must come first — this is what the evaluator proxy injects
+API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 
@@ -27,7 +24,6 @@ TASKS = [
     "cold_chain_vaccine_urgent",
     "cold_chain_grid_outage",
 ]
-
 
 SYSTEM_PROMPT = textwrap.dedent(
     """
@@ -52,8 +48,6 @@ Output ONLY valid JSON:
 ).strip()
 
 
-# ---------------- Logging ----------------
-
 def log_start(task: str, env: str, model: str):
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
@@ -76,21 +70,16 @@ def log_end(success, steps, score, rewards):
     )
 
 
-# ---------------- Helpers ----------------
-
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
 def normalize_action(payload):
-
     target = payload.get("target_hub", "Destination")
     if target not in ["Destination", "Repair_Hub"]:
         target = "Destination"
-
     cooling = clamp(float(payload.get("cooling_power", 0.7)), 0.0, 1.0)
     speed = clamp(float(payload.get("speed_kmh", 75)), 40.0, 120.0)
-
     return {
         "target_hub": target,
         "cooling_power": round(cooling, 3),
@@ -99,7 +88,6 @@ def normalize_action(payload):
 
 
 def call_model(client, prompt):
-
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
@@ -109,33 +97,25 @@ def call_model(client, prompt):
         temperature=0.1,
         max_tokens=200,
     )
-
     text = response.choices[0].message.content.strip()
-
     if "```" in text:
         text = text.split("```")[1]
         if "```" in text:
             text = text.split("```")[0]
-
     start = text.find("{")
     end = text.rfind("}")
     text = text[start:end + 1]
-
     return json.loads(text)
 
 
-# ---------------- Task Runner ----------------
-
 async def run_task(task_name: str):
-
-    # IMPORTANT: use proxy env vars
+    # ✅ Both base_url and api_key come from environment variables
     client = OpenAI(
         base_url=API_BASE_URL,
         api_key=API_KEY,
     )
 
     env = MyEnvironment()
-
     rewards = []
     steps_taken = 0
     score = 0.0
@@ -146,7 +126,6 @@ async def run_task(task_name: str):
     obs = env.reset(task_name=task_name)
 
     for step in range(1, 21):
-
         user_prompt = (
             f"Task={task_name}; "
             f"location={obs.current_location}; "
@@ -166,12 +145,10 @@ async def run_task(task_name: str):
             f"score={obs.task_score:.3f}"
         )
 
-        # ALWAYS CALL LLM
         try:
             parsed = call_model(client, user_prompt)
             action_dict = normalize_action(parsed)
             error = None
-
         except Exception as e:
             action_dict = {
                 "target_hub": "Destination",
@@ -197,16 +174,11 @@ async def run_task(task_name: str):
             break
 
     log_end(success, steps_taken, score, rewards)
-
     return score
 
 
-# ---------------- Main ----------------
-
 async def main():
-
     scores = {}
-
     for task in TASKS:
         score = await run_task(task)
         scores[task] = score
