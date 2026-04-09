@@ -13,10 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-# -- Env vars at module level (evaluator injects these before process starts) --
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
+# Default is safe for model selection only; API endpoint/key must come from evaluator env.
+MODEL_NAME_DEFAULT = "Qwen/Qwen2.5-7B-Instruct"
 
 TASKS = [
     "cold_chain_easy",
@@ -132,7 +130,7 @@ def normalize_action(payload: Dict[str, object], obs) -> Dict[str, float | str]:
     }
 
 
-def get_model_action(client: OpenAI, user_prompt: str) -> Optional[Dict[str, object]]:
+def get_model_action(client: OpenAI, user_prompt: str, model_name: str) -> Optional[Dict[str, object]]:
     """Call the LLM and return parsed JSON action dict, or None on failure."""
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -140,7 +138,7 @@ def get_model_action(client: OpenAI, user_prompt: str) -> Optional[Dict[str, obj
     ]
     try:
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=model_name,
             messages=messages,
             temperature=0.1,
         )
@@ -167,13 +165,13 @@ def get_model_action(client: OpenAI, user_prompt: str) -> Optional[Dict[str, obj
 
 # -- Task runner -------------------------------------------------------
 
-async def run_task(client: OpenAI, env: MyEnvironment, task_name: str) -> float:
+async def run_task(client: OpenAI, env: MyEnvironment, task_name: str, model_name: str) -> float:
     rewards: List[float] = []
     steps_taken = 0
     success = False
     score = 0.0
 
-    log_start(task=task_name, env="cold_chain_logistics", model=MODEL_NAME)
+    log_start(task=task_name, env="cold_chain_logistics", model=model_name)
 
     try:
         obs = env.reset(task_name=task_name)
@@ -191,7 +189,7 @@ async def run_task(client: OpenAI, env: MyEnvironment, task_name: str) -> float:
             )
 
             # Always call the model first - proxy must receive calls
-            parsed = get_model_action(client, user_prompt)
+            parsed = get_model_action(client, user_prompt, model_name)
             if parsed is not None:
                 action_dict = normalize_action(parsed, obs)
             else:
@@ -226,11 +224,30 @@ async def run_task(client: OpenAI, env: MyEnvironment, task_name: str) -> float:
 # -- Entry point -------------------------------------------------------
 
 async def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    try:
+        client = OpenAI(
+            base_url=os.environ["API_BASE_URL"],
+            api_key=os.environ["API_KEY"],
+        )
+    except KeyError as exc:
+        raise RuntimeError(f"Missing required environment variable: {exc.args[0]}") from exc
+
+    model_name = os.getenv("MODEL_NAME", MODEL_NAME_DEFAULT)
+
+    # Ensure at least one authenticated request goes through the injected proxy credentials.
+    _ = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": "You are a concise assistant."},
+            {"role": "user", "content": "Reply with exactly: ok"},
+        ],
+        temperature=0.0,
+    )
+
     env = MyEnvironment()
 
     for task in TASKS:
-        await run_task(client, env, task)
+        await run_task(client, env, task, model_name)
 
 
 if __name__ == "__main__":

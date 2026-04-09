@@ -9,10 +9,6 @@ COPY . .
 
 # Points to /app where models.py lives
 ENV PYTHONPATH="/app"
-# LLM/evaluator configuration variables (set these in Space Secrets/Variables).
-ENV API_BASE_URL="https://router.huggingface.co/v1"
-ENV MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
-ENV HF_TOKEN=""
 
 EXPOSE 8000
 
