@@ -12,10 +12,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
-# ✅ API_KEY must come first — this is what the evaluator proxy injects
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
+API_KEY = os.environ["API_KEY"]                                              # strict — no fallback
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
 
 TASKS = [
     "cold_chain_easy",
