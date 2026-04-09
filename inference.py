@@ -13,10 +13,14 @@ from my_env.server.my_env_environment import MyEnvironment
 from my_env.models import MyEnvAction
 
 # ── Environment Variables ──────────────────────────────────────────────
-# API_KEY is injected by the evaluator proxy — no fallback allowed
-API_KEY      = os.environ["API_KEY"]
+API_KEY      = os.environ["API_KEY"]                          # strict — evaluator injects this
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")  # ✅ 72B like friend's working code
+
+# Debug: print what we received so evaluator logs show it
+print(f"[DEBUG] API_BASE_URL={API_BASE_URL}", flush=True)
+print(f"[DEBUG] MODEL_NAME={MODEL_NAME}", flush=True)
+print(f"[DEBUG] API_KEY set={bool(API_KEY)}", flush=True)
 
 TASKS = [
     "cold_chain_easy",
@@ -107,7 +111,7 @@ def call_model(client: OpenAI, prompt: str) -> dict:
     start = text.find("{")
     end   = text.rfind("}")
     if start == -1 or end == -1:
-        raise ValueError(f"No JSON object found in model response: {text}")
+        raise ValueError(f"No JSON found in response: {text!r}")
 
     return json.loads(text[start : end + 1])
 
@@ -115,7 +119,6 @@ def call_model(client: OpenAI, prompt: str) -> dict:
 # ── Task Runner ────────────────────────────────────────────────────────
 
 async def run_task(task_name: str) -> float:
-    # Client built from evaluator-injected env vars
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     env         = MyEnvironment()
@@ -152,7 +155,8 @@ async def run_task(task_name: str) -> float:
             action_dict = normalize_action(parsed)
             error       = None
         except Exception as e:
-            print(f"[DEBUG] LLM call failed at step {step}: {e}", flush=True)
+            # ✅ Log loudly so evaluator logs show the real error
+            print(f"[DEBUG] LLM call failed at step {step}: {type(e).__name__}: {e}", flush=True)
             action_dict = {"target_hub": "Destination", "cooling_power": 0.75, "speed_kmh": 75.0}
             error       = str(e)
 
