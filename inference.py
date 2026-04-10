@@ -5,23 +5,21 @@ import sys
 import textwrap
 import json
 
+import requests
 from openai import OpenAI
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from my_env.server.my_env_environment import MyEnvironment
-from my_env.models import MyEnvAction
-
-# ✅ HF_TOKEN first — evaluator injects key as HF_TOKEN
-# API_KEY as fallback per their error message
+# ── Environment Variables ──────────────────────────────────────────────
 API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME   = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 
-# Debug prints so evaluator logs show what was received
+# Your running HF Space — the environment server
+ENV_URL = os.getenv("ENV_URL", "https://astha28-openenv-cold-chain.hf.space")
+
 print(f"[DEBUG] API_BASE_URL={API_BASE_URL}", flush=True)
 print(f"[DEBUG] MODEL_NAME={MODEL_NAME}", flush=True)
-print(f"[DEBUG] HF_TOKEN_set={bool(os.getenv('HF_TOKEN'))} API_KEY_set={bool(os.getenv('API_KEY'))}", flush=True)
+print(f"[DEBUG] API_KEY_set={bool(API_KEY)}", flush=True)
+print(f"[DEBUG] ENV_URL={ENV_URL}", flush=True)
 
 TASKS = [
     "cold_chain_easy",
@@ -52,6 +50,8 @@ Output ONLY valid JSON with no markdown fences:
 """).strip()
 
 
+# ── Logging ────────────────────────────────────────────────────────────
+
 def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
@@ -68,6 +68,32 @@ def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
         f"score={score:.2f} rewards={','.join(f'{r:.2f}' for r in rewards)}",
         flush=True,
     )
+
+
+# ── HTTP Environment Client ────────────────────────────────────────────
+
+def env_reset(task_name: str) -> dict:
+    """Call /reset on the HF Space environment server."""
+    resp = requests.post(
+        f"{ENV_URL}/reset",
+        json={"task_name": task_name},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def env_step(action_dict: dict) -> dict:
+    """Call /step on the HF Space environment server."""
+    resp = requests.post(
+        f"{ENV_URL}/step",
+        json={"action": action_dict},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
@@ -106,10 +132,17 @@ def call_model(client: OpenAI, prompt: str) -> dict:
         raise ValueError(f"No JSON found in response: {text!r}")
     return json.loads(text[start : end + 1])
 
+def extract_obs(response: dict) -> dict:
+    """Pull observation fields from /reset or /step response."""
+    obs = response.get("observation", response)
+    return obs
+
+
+# ── Task Runner ────────────────────────────────────────────────────────
 
 async def run_task(task_name: str) -> float:
+    # ✅ OpenAI client uses evaluator-injected API_KEY and API_BASE_URL
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    env    = MyEnvironment()
 
     rewards     = []
     steps_taken = 0
@@ -117,26 +150,29 @@ async def run_task(task_name: str) -> float:
     success     = False
 
     log_start(task_name, "cold_chain_logistics", MODEL_NAME)
-    obs = env.reset(task_name=task_name)
+
+    # Reset via HTTP — no local environment import
+    reset_resp = env_reset(task_name)
+    obs = extract_obs(reset_resp)
 
     for step in range(1, 21):
         user_prompt = (
             f"Task={task_name}; "
-            f"location={obs.current_location}; "
-            f"temp={obs.cargo_temp_celsius:.2f}; "
-            f"fuel={obs.fuel_level_percent:.2f}; "
-            f"ambient={obs.ambient_temp_celsius:.2f}; "
-            f"dist_dest={obs.distance_to_destination_km:.2f}; "
-            f"dist_hub={obs.distance_to_emergency_hub_km:.2f}; "
-            f"cooling_health={obs.cooling_unit_health:.3f}; "
-            f"deadline={obs.delivery_deadline_hours}; "
-            f"elapsed={obs.hours_elapsed}; "
-            f"urgency={obs.urgency_index:.3f}; "
-            f"quality={obs.cargo_quality_index:.3f}; "
-            f"compliance={obs.compliance_index:.3f}; "
-            f"excursions={obs.excursion_hours}/{obs.excursion_budget_hours}; "
-            f"switches={obs.route_switch_count}; "
-            f"score={obs.task_score:.3f}"
+            f"location={obs.get('current_location', 'En_Route')}; "
+            f"temp={obs.get('cargo_temp_celsius', 2.0):.2f}; "
+            f"fuel={obs.get('fuel_level_percent', 100.0):.2f}; "
+            f"ambient={obs.get('ambient_temp_celsius', 25.0):.2f}; "
+            f"dist_dest={obs.get('distance_to_destination_km', 0.0):.2f}; "
+            f"dist_hub={obs.get('distance_to_emergency_hub_km', 0.0):.2f}; "
+            f"cooling_health={obs.get('cooling_unit_health', 1.0):.3f}; "
+            f"deadline={obs.get('delivery_deadline_hours', 8)}; "
+            f"elapsed={obs.get('hours_elapsed', 0)}; "
+            f"urgency={obs.get('urgency_index', 0.0):.3f}; "
+            f"quality={obs.get('cargo_quality_index', 1.0):.3f}; "
+            f"compliance={obs.get('compliance_index', 1.0):.3f}; "
+            f"excursions={obs.get('excursion_hours', 0)}/{obs.get('excursion_budget_hours', 2)}; "
+            f"switches={obs.get('route_switch_count', 0)}; "
+            f"score={obs.get('task_score', 0.0):.3f}"
         )
 
         try:
@@ -144,28 +180,36 @@ async def run_task(task_name: str) -> float:
             action_dict = normalize_action(parsed)
             error       = None
         except Exception as e:
-            print(f"[DEBUG] LLM call failed step={step} error={type(e).__name__}: {e}", flush=True)
+            print(f"[DEBUG] LLM call failed step={step} type={type(e).__name__} msg={e}", flush=True)
             action_dict = {"target_hub": "Destination", "cooling_power": 0.75, "speed_kmh": 75.0}
             error       = str(e)
 
-        action = MyEnvAction(**action_dict)
-        obs    = env.step(action)
+        # Step via HTTP
+        try:
+            step_resp = env_step(action_dict)
+        except Exception as e:
+            print(f"[DEBUG] env_step failed step={step}: {e}", flush=True)
+            break
 
-        reward      = obs.reward
-        done        = obs.done
-        score       = clamp(float(obs.task_score), 0.0, 1.0)
+        obs    = extract_obs(step_resp)
+        reward = float(step_resp.get("reward", obs.get("reward", 0.0)))
+        done   = bool(step_resp.get("done", obs.get("done", False)))
+        score  = clamp(float(obs.get("task_score", 0.0)), 0.0, 1.0)
+
         rewards.append(reward)
         steps_taken = step
 
         log_step(step, json.dumps(action_dict), reward, done, error)
 
         if done:
-            success = obs.current_location == "Destination"
+            success = obs.get("current_location") == "Destination"
             break
 
     log_end(success, steps_taken, score, rewards)
     return score
 
+
+# ── Main ───────────────────────────────────────────────────────────────
 
 async def main() -> None:
     scores = {}
