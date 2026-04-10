@@ -10,14 +10,14 @@ from openai import OpenAI
 if not os.environ.get("API_KEY"):
     raise RuntimeError("FATAL: API_KEY environment variable is not set. Cannot proceed.")
 
-API_KEY      = os.environ["API_KEY"]          # strictly evaluator's key — no fallback
+API_KEY      = os.environ["API_KEY"]
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 ENV_URL      = os.environ.get("ENV_URL", "https://astha28-openenv-cold-chain.hf.space")
 
 print(f"[DEBUG] API_BASE_URL={API_BASE_URL}", flush=True)
 print(f"[DEBUG] MODEL_NAME={MODEL_NAME}", flush=True)
-print(f"[DEBUG] API_KEY prefix={API_KEY[:6]}...", flush=True)
+print(f"[DEBUG] API_KEY_prefix={API_KEY[:6]}...", flush=True)
 print(f"[DEBUG] ENV_URL={ENV_URL}", flush=True)
 
 TASKS = [
@@ -61,7 +61,7 @@ def extract_obs(response):
     return response.get("observation", response)
 
 def call_model(client, prompt):
-    # ✅ This call goes through API_BASE_URL with API_KEY — evaluator's proxy
+    # ✅ NO try/except — crashes on any LLM failure so evaluator sees real error
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
@@ -75,7 +75,7 @@ def call_model(client, prompt):
     start = text.find("{")
     end   = text.rfind("}")
     if start == -1 or end == -1:
-        raise ValueError(f"No JSON: {text!r}")
+        raise ValueError(f"No JSON found in response: {text!r}")
     return json.loads(text[start:end+1])
 
 def normalize_action(payload):
@@ -93,7 +93,6 @@ async def run_task(task_name):
     rewards, steps_taken, score, success = [], 0, 0.0, False
 
     log_start(task_name, "cold_chain_logistics", MODEL_NAME)
-
     reset_resp = env_reset(task_name)
     obs = extract_obs(reset_resp)
 
@@ -107,21 +106,10 @@ async def run_task(task_name):
             f"cooling_health={obs.get('cooling_unit_health', 1.0):.2f}"
         )
 
-        try:
-            action_dict = normalize_action(call_model(client, prompt))
-            error = None
-            print(f"[DEBUG] step={step} LLM call SUCCESS", flush=True)
-        except Exception as e:
-            print(f"[DEBUG] step={step} LLM FAILED {type(e).__name__}: {e}", flush=True)
-            action_dict = {"target_hub": "Destination", "cooling_power": 0.75, "speed_kmh": 75.0}
-            error = str(e)
+        # ✅ NO try/except — let real errors surface to evaluator logs
+        action_dict = normalize_action(call_model(client, prompt))
 
-        try:
-            step_resp = env_step(action_dict)
-        except Exception as e:
-            print(f"[DEBUG] env_step failed: {e}", flush=True)
-            break
-
+        step_resp   = env_step(action_dict)
         obs         = extract_obs(step_resp)
         reward      = float(step_resp.get("reward", obs.get("reward", 0.0)))
         done        = bool(step_resp.get("done", obs.get("done", False)))
@@ -129,8 +117,7 @@ async def run_task(task_name):
         rewards.append(reward)
         steps_taken = step
 
-        log_step(step, json.dumps(action_dict), reward, done, error)
-
+        log_step(step, json.dumps(action_dict), reward, done, None)
         if done:
             success = obs.get("current_location") == "Destination"
             break
